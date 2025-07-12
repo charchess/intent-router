@@ -1,6 +1,9 @@
 import os
+import json
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware # <-- Importer le middleware
 import httpx
+
 
 # --- Configuration chargée depuis les variables d'environnement ---
 # On utilise os.getenv pour lire les variables.
@@ -16,6 +19,23 @@ WEBHOOKS = {
 }
 
 app = FastAPI()
+
+# --- Configuration CORS ---
+# Définir les origines autorisées à appeler cette API.
+# Pour l'instant, nous autorisons uniquement votre instance SillyTavern.
+origins = [
+    "https://sillytavern.truxonline.com", # <-- L'URL de votre SillyTavern
+    # Ajoutez "http://localhost:8000" si vous testez SillyTavern localement
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins, # Autoriser les origines spécifiées
+    allow_credentials=True,
+    allow_methods=["*"], # Autoriser toutes les méthodes (GET, POST, etc.)
+    allow_headers=["*"], # Autoriser tous les en-têtes
+)
+# --- Fin de la configuration CORS ---
 
 # --- Vérification au démarrage ---
 @app.on_event("startup")
