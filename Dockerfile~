@@ -1,0 +1,25 @@
+# Utilise une image Python légère comme base
+FROM python:3.11-slim
+
+# Définit le répertoire de travail dans le conteneur
+WORKDIR /app
+
+# Copie le fichier des dépendances
+COPY requirements.txt .
+
+# Installe les dépendances
+# --no-cache-dir réduit la taille de l'image finale
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copie le code de notre service dans le conteneur
+COPY intent_router.py .
+
+# *** NOUVELLE LIGNE ***
+# Définit le chemin où Hugging Face (et sentence-transformers) doit stocker les modèles.
+#ENV HF_HOME=/models
+
+# Expose le port que notre service va utiliser
+EXPOSE 80
+
+# La commande pour lancer le service quand le conteneur démarre
+CMD ["uvicorn", "embedding_service:app", "--host", "0.0.0.0", "--port", "8001"]

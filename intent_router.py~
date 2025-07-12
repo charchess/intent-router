@@ -1,0 +1,30 @@
+from fastapi import FastAPI
+import httpx  # Une librairie moderne pour faire des appels HTTP
+
+# Dictionnaire qui mappe les "outils" aux webhooks n8n
+WEBHOOKS = {
+    "memory_store": "https://n8n.truxonline.com/webhook/52328e0f-d35f-4982-8467-cf883eaf840c",
+    "home_assistant": "https://n8n.truxonline.com/webhook/36dd058c-de30-4dd4-bb17-cd1340fb914b"
+    # Ajoutez d'autres outils ici à l'avenir
+}
+
+app = FastAPI()
+
+# Le endpoint qui reçoit le JSON de SillyTavern
+@app.post("/route")
+async def route_intent(intent: dict):
+    tool = intent.get("tool") # Récupère le nom de l'outil
+
+    if tool in WEBHOOKS:
+        webhook_url = WEBHOOKS[tool]
+        # On utilise httpx pour appeler le webhook de manière asynchrone
+        async with httpx.AsyncClient() as client:
+            response = await client.post(webhook_url, json=intent)
+        
+        # On peut renvoyer une confirmation
+        return {"status": "success", "tool": tool, "n8n_response_code": response.status_code}
+    else:
+        # Si l'outil n'est pas connu, on renvoie une erreur
+        return {"status": "error", "message": f"Tool '{tool}' not found."}
+        
+        
