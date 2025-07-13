@@ -1,11 +1,13 @@
 import os
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 # --- Configuration ---
-# L'adresse de votre API Oobabooga en mode OpenAI
+APP_VERSION = "1.1" # <-- NOTRE NOUVELLE VARIABLE DE VERSION
 OOBABOOGA_API_URL = "http://192.168.199.78:5000/v1"
+# ... (le reste de la configuration) ...
 
 # Le prompt système pour Lisa. On le met ici pour tout centraliser.
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
@@ -13,6 +15,12 @@ LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de 
 
 app = FastAPI()
 
+# --- Vérification au démarrage ---
+@app.on_event("startup")
+async def startup_event():
+    # On affiche la version dans les logs au tout début !
+    print(f"--- Intent Router - Version {APP_VERSION} ---") 
+    
 # --- Configuration CORS ---
 # On autorise toutes les origines pour l'instant pour faciliter le développement
 app.add_middleware(

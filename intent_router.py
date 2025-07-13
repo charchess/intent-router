@@ -1,21 +1,17 @@
 import os
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel # <-- L'IMPORT CORRECT
 import httpx
 
 # --- Configuration ---
-# L'adresse de votre API Oobabooga en mode OpenAI
+APP_VERSION = "1.2" # On incrémente la version pour être sûr
 OOBABOOGA_API_URL = "http://192.168.199.78:5000/v1"
-
-# Le prompt système pour Lisa. On le met ici pour tout centraliser.
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
-
 
 app = FastAPI()
 
 # --- Configuration CORS ---
-# On autorise toutes les origines pour l'instant pour faciliter le développement
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -24,15 +20,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Structures de Données ---
+# --- Structures de Données (Maintenant correcte) ---
 class UserInput(BaseModel):
     message: str
-    history: list = [] # Pour stocker l'historique de la conversation
+    history: list = []
 
-# --- Le Seul Endpoint de notre API ---
+@app.on_event("startup")
+async def startup_event():
+    print(f"--- Intent Router - Version {APP_VERSION} ---")
+
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
-    # Étape 1 : Préparer la requête pour Oobabooga
     conversation_history = [
         {"role": "system", "content": LISA_SYSTEM_PROMPT}
     ]
@@ -40,30 +38,27 @@ async def handle_chat(user_input: UserInput):
     conversation_history.append({"role": "user", "content": user_input.message})
 
     oobabooga_payload = {
-        "model": "L3.3-70B-Magnum-Diamond-Q5_K_S.gguf", # Le nom de votre modèle
+        "model": "L3.3-70B-Magnum-Diamond-Q5_K_S.gguf",
         "messages": conversation_history,
         "max_tokens": 500,
         "temperature": 0.7,
-        "stream": False # On ne gère pas le streaming pour l'instant
+        "stream": False
     }
 
-    # Étape 2 : Appeler Oobabooga
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client: # Timeout de 60s
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=oobabooga_payload)
-            response.raise_for_status() # Lève une exception si la réponse est une erreur
-            
+            response.raise_for_status()
             ai_response = response.json()
             lisa_message = ai_response["choices"][0]["message"]["content"]
-            
-            # Pour l'instant, on ne fait pas de détection d'action.
-            # On renvoie juste le message de Lisa.
-            
             return {"reply": lisa_message}
-
-    except httpx.HTTPStatusError as exc:
-        print(f"Erreur lors de l'appel à Oobabooga: {exc.response.text}")
-        raise HTTPException(status_code=502, detail=f"Oobabooga API error: {exc.response.text}")
+    except httpx.RequestError as exc:
+        # Erreur plus détaillée pour le débogage
+        error_details = f"Erreur de communication avec Oobabooga: {exc}"
+        print(error_details)
+        raise HTTPException(status_code=502, detail=error_details)
     except Exception as exc:
-        print(f"Erreur interne: {exc}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(exc)}")
+        error_details = f"Erreur interne inattendue: {type(exc).__name__} - {exc}"
+        print(error_details)
+        raise HTTPException(status_code=500, detail=error_details)```
+
