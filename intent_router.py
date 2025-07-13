@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, HTTPException, BaseModel # <-- MODIFICATION ICI
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
