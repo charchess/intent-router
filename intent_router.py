@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BaseModel # <-- MODIFICATION ICI
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
