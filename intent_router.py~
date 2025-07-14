@@ -3,50 +3,23 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
-import logging # Importation du module logging
+import traceback # On importe le module de traceback
 
 # --- Configuration ---
-APP_VERSION = "1.3.1" # On incrémente encore pour être sûr
-OOBABOOGA_API_URL = "http://192.168.199.78:5000/v1"
-LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
+APP_VERSION = "1.5" # Nouvelle version de débogage
+OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL", "http://192.168.199.78:5000/v1")
 
-app = FastAPI()
-
-# --- Configuration CORS ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- Configuration du Logger ---
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO) # Niveau de log par défaut
-handler = logging.StreamHandler()
-formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-
+# ... (le reste de la config, app, CORS, etc. ne change pas) ...
 # --- Structures de Données ---
 class UserInput(BaseModel):
     message: str
     history: list = []
 
-# --- Événements et Endpoints ---
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info(f"--- Intent Router - Version {APP_VERSION} ---")
+# ...
 
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
-    conversation_history = [
-        {"role": "system", "content": LISA_SYSTEM_PROMPT}
-    ]
-    conversation_history.extend(user_input.history)
-    conversation_history.append({"role": "user", "content": user_input.message})
+    # ... (la construction de conversation_history ne change pas) ...
 
     oobabooga_payload = {
         "model": "L3.3-70B-Magnum-Diamond-Q5_K_S.gguf",
@@ -56,18 +29,29 @@ async def handle_chat(user_input: UserInput):
         "stream": False
     }
 
+    print(f"--- [DEBUG] Payload envoyé à Oobabooga : {oobabooga_payload} ---")
+
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        # On définit un timeout plus long et explicite
+        timeout = httpx.Timeout(60.0, connect=10.0)
+        
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            print(f"--- [DEBUG] Appel de POST sur {OOBABOOGA_API_URL}/chat/completions ---")
             response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=oobabooga_payload)
-            response.raise_for_status()
+            print(f"--- [DEBUG] Réponse reçue d'Oobabooga. Statut : {response.status_code} ---")
+            
+            response.raise_for_status() # Lève une exception pour les codes 4xx/5xx
+            
             ai_response = response.json()
             lisa_message = ai_response["choices"][0]["message"]["content"]
             return {"reply": lisa_message}
-    except httpx.RequestError as exc:
-        error_details = f"Erreur de communication avec Oobabooga: {exc}"
-        logger.error(error_details) # Utilisation du logger
-        raise HTTPException(status_code=502, detail=error_details)
+
     except Exception as exc:
-        error_details = f"Erreur interne inattendue: {type(exc).__name__} - {exc}"
-        logger.critical(error_details) # Utilisation du logger
+        # C'est la partie la plus importante. On log l'erreur complète.
+        full_traceback = traceback.format_exc()
+        error_details = f"Exception type: {type(exc).__name__}, Message: {exc}, Traceback: {full_traceback}"
+        print(f"--- [ERREUR] --- {error_details}")
         raise HTTPException(status_code=500, detail=error_details)
+        
+        
+        
