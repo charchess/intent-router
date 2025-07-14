@@ -10,7 +10,7 @@ from pydantic import BaseModel
 # =================================================================================
 
 # On lit les variables d'environnement. Des valeurs par défaut sont fournies pour le développement local.
-APP_VERSION = "2.1"
+APP_VERSION = "2.2"
 OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL", "http://localhost:5000/v1")
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
 

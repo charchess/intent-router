@@ -88,7 +88,7 @@ async def handle_chat(user_input: UserInput):
     # 2. Appel à l'API d'Oobabooga
     try:
         # Définition explicite du timeout
-        timeout = httpx.Timeout(120.0, connect=20.0) # Timeout de 2 minutes au total
+        timeout = httpx.Timeout(1200.0, connect=20.0) # Timeout de 2 minutes au total
         
         async with httpx.AsyncClient(timeout=timeout) as client:
             print(f"[DEBUG] Envoi de la requête POST à {OOBABOOGA_API_URL}/chat/completions")
