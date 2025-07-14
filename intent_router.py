@@ -6,8 +6,8 @@ import httpx
 import logging # Importation du module logging
 
 # --- Configuration ---
-APP_VERSION = "1.3.1" # On incrémente encore pour être sûr
-OOBABOOGA_API_URL = "http://192.168.199.78:5000/v1"
+APP_VERSION = "2.0" # On incrémente encore pour être sûr
+OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL")
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
 
 app = FastAPI()
@@ -39,6 +39,11 @@ class UserInput(BaseModel):
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"--- Intent Router - Version {APP_VERSION} ---")
+
+    # On ajoute une vérification cruciale au démarrage
+    if not OOBABOOGA_API_URL:
+        raise ValueError("FATAL: La variable d'environnement OOBABOOGA_API_URL n'est pas définie !")
+    print(f"Connecté au backend Oobabooga à l'adresse : {OOBABOOGA_API_URL}")
 
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
