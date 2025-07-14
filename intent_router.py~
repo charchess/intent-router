@@ -3,10 +3,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
+import logging # Importation du module logging
 
 # --- Configuration ---
-APP_VERSION = "1.3" # On incrémente encore pour être sûr
-OOBABOOGA_API_URL = "http://192.168.199.78:5000/v1"
+APP_VERSION = "1.3.1" # On incrémente encore pour être sûr
+OOBABOOGA_API_URL = "[http://192.168.199.78:5000/v1](http://192.168.199.78:5000/v1)"
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
 
 app = FastAPI()
@@ -20,6 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Configuration du Logger ---
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO) # Niveau de log par défaut
+handler = logging.StreamHandler()
+formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+
 # --- Structures de Données ---
 class UserInput(BaseModel):
     message: str
@@ -27,12 +36,10 @@ class UserInput(BaseModel):
 
 # --- Événements et Endpoints ---
 
-# Cette fonction est maintenant au bon niveau d'indentation (niveau 0)
 @app.on_event("startup")
 async def startup_event():
-    print(f"--- Intent Router - Version {APP_VERSION} ---")
+    logger.info(f"--- Intent Router - Version {APP_VERSION} ---")
 
-# Cette fonction est aussi au niveau 0
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
     conversation_history = [
@@ -58,9 +65,9 @@ async def handle_chat(user_input: UserInput):
             return {"reply": lisa_message}
     except httpx.RequestError as exc:
         error_details = f"Erreur de communication avec Oobabooga: {exc}"
-        print(error_details)
+        logger.error(error_details) # Utilisation du logger
         raise HTTPException(status_code=502, detail=error_details)
     except Exception as exc:
         error_details = f"Erreur interne inattendue: {type(exc).__name__} - {exc}"
-        print(error_details)
+        logger.critical(error_details) # Utilisation du logger
         raise HTTPException(status_code=500, detail=error_details)
