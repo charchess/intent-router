@@ -1,11 +1,11 @@
 import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel # <-- L'IMPORT CORRECT
+from pydantic import BaseModel
 import httpx
 
 # --- Configuration ---
-APP_VERSION = "1.2" # On incrémente la version pour être sûr
+APP_VERSION = "1.3" # On incrémente encore pour être sûr
 OOBABOOGA_API_URL = "http://192.168.199.78:5000/v1"
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
 
@@ -20,15 +20,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- Structures de Données (Maintenant correcte) ---
+# --- Structures de Données ---
 class UserInput(BaseModel):
     message: str
     history: list = []
 
+# --- Événements et Endpoints ---
+
+# Cette fonction est maintenant au bon niveau d'indentation (niveau 0)
 @app.on_event("startup")
 async def startup_event():
     print(f"--- Intent Router - Version {APP_VERSION} ---")
 
+# Cette fonction est aussi au niveau 0
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
     conversation_history = [
@@ -53,12 +57,10 @@ async def handle_chat(user_input: UserInput):
             lisa_message = ai_response["choices"][0]["message"]["content"]
             return {"reply": lisa_message}
     except httpx.RequestError as exc:
-        # Erreur plus détaillée pour le débogage
         error_details = f"Erreur de communication avec Oobabooga: {exc}"
         print(error_details)
         raise HTTPException(status_code=502, detail=error_details)
     except Exception as exc:
         error_details = f"Erreur interne inattendue: {type(exc).__name__} - {exc}"
         print(error_details)
-        raise HTTPException(status_code=500, detail=error_details)```
-
+        raise HTTPException(status_code=500, detail=error_details)
