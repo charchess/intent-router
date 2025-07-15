@@ -9,16 +9,22 @@ from pydantic import BaseModel
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "6.0"
+APP_VERSION = "7.0"
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
+
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
-# -- Configuration des Backends --
+# -- Config Oobabooga --
 OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL")
+OOBABOOGA_MODEL_NAME = os.getenv("OOBABOOGA_MODEL_NAME", "L3.3-70B-Magnum-Diamond-Q5_K_S.gguf")
+
+# -- Config Gemini --
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-LISA_SYSTEM_PROMPT = "Tu es Lisa, une IA de gestion de HomeLab..." # Votre prompt complet ici
+GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+
+LISA_SYSTEM_PROMPT = "Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."
 
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -28,16 +34,21 @@ class UserInput(BaseModel):
     history: list = []
 
 # =================================================================================
-# FONCTIONS SPÉCIFIQUES À CHAQUE BACKEND
+# FONCTIONS SPÉCIFIQUES AUX BACKENDS
 # =================================================================================
 
 async def get_reply_from_oobabooga(user_input: UserInput, history: list):
+    # Prépare et envoie la requête à Oobabooga.
+    if not OOBABOOGA_API_URL:
+        raise HTTPException(status_code=500, detail="OOBABOOGA_API_URL n'est pas configuré.")
+
     payload = {
-        "model": "L3.3-70B-Magnum-Diamond-Q5_K_S.gguf",
+        "model": OOBABOOGA_MODEL_NAME, # Utilise la variable d'environnement
         "messages": history,
         "max_tokens": 500, "temperature": 0.7, "stream": False
     }
     logging.debug(f"Payload Oobabooga: {payload}")
+    
     timeout = httpx.Timeout(300.0, connect=20.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=payload)
@@ -46,6 +57,10 @@ async def get_reply_from_oobabooga(user_input: UserInput, history: list):
         return ai_response.get("choices", [{}])[0].get("message", {}).get("content", "Erreur: Réponse Oobabooga malformée.")
 
 async def get_reply_from_gemini(user_input: UserInput, history: list):
+    # Prépare et envoie la requête à l'API Gemini.
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY n'est pas configuré.")
+
     gemini_history = []
     for item in user_input.history:
         role = "model" if item["role"] == "assistant" else "user"
@@ -53,8 +68,9 @@ async def get_reply_from_gemini(user_input: UserInput, history: list):
     gemini_history.append({"role": "user", "parts": [{"text": user_input.message}]})
     
     payload = {"contents": gemini_history, "systemInstruction": {"parts": [{"text": LISA_SYSTEM_PROMPT}]}}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     logging.debug(f"Payload Gemini: {payload}")
+
     timeout = httpx.Timeout(60.0, connect=10.0)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=payload)
@@ -70,17 +86,18 @@ async def get_reply_from_gemini(user_input: UserInput, history: list):
 async def startup_event():
     logging.info(f"--- Intent Router - Version {APP_VERSION} ---")
     logging.info(f"Backend LLM sélectionné : {LLM_BACKEND}")
-    if LLM_BACKEND == "oobabooga" and not OOBABOOGA_API_URL:
-        logging.error("AVERTISSEMENT: OOBABOOGA_API_URL n'est pas définie !")
-    if LLM_BACKEND == "gemini" and not GEMINI_API_KEY:
-        logging.error("AVERTISSEMENT: GEMINI_API_KEY n'est pas définie !")
+    if LLM_BACKEND == "oobabooga":
+        if not OOBABOOGA_API_URL: logging.error("AVERTISSEMENT: OOBABOOGA_API_URL n'est pas définie !")
+        logging.info(f"Modèle Oobabooga : {OOBABOOGA_MODEL_NAME}")
+    if LLM_BACKEND == "gemini":
+        if not GEMINI_API_KEY: logging.error("AVERTISSEMENT: GEMINI_API_KEY n'est pas définie !")
+        logging.info(f"Modèle Gemini : {GEMINI_MODEL_NAME}")
     logging.info("---------------------------------------------")
 
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
     logging.info(f"Requête reçue pour /chat.")
     
-    # Construction de l'historique de base
     full_history = [{"role": "system", "content": LISA_SYSTEM_PROMPT}]
     full_history.extend(user_input.history)
     full_history.append({"role": "user", "content": user_input.message})
@@ -89,10 +106,9 @@ async def handle_chat(user_input: UserInput):
         if LLM_BACKEND == "oobabooga":
             reply_text = await get_reply_from_oobabooga(user_input, full_history)
         elif LLM_BACKEND == "gemini":
-            # Gemini gère le prompt système différemment, on ne lui passe que l'historique user/model
             reply_text = await get_reply_from_gemini(user_input, user_input.history)
         else:
-            raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement.")
+            raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement. Choisir 'oobabooga' ou 'gemini'.")
         
         logging.info("Réponse générée avec succès.")
         return {"reply": reply_text}
