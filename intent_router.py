@@ -2,14 +2,14 @@ import os
 import httpx
 import traceback
 import logging
-from fastapi import FastAPI, HTTPException
+import re # On importe le module des expressions régulières
+import json
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# =================================================================================
-# CONFIGURATION
-# =================================================================================
-APP_VERSION = "7.0"
+# --- CONFIGURATION ---
+APP_VERSION = "8.0" # Version avec détection d'outils
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
@@ -47,6 +47,14 @@ Voici les outils disponibles :
 
 Pour toutes les autres conversations, réponds normalement en langage naturel.
 """
+
+# --- WEBHOOKS N8N ---
+N8N_MEMORY_WEBHOOK_URL = os.getenv("N8N_MEMORY_WEBHOOK_URL")
+N8N_ACTION_WEBHOOK_URL = os.getenv("N8N_ACTION_WEBHOOK_URL")
+WEBHOOKS = {
+    "memory_store": N8N_MEMORY_WEBHOOK_URL,
+    "home_assistant": N8N_ACTION_WEBHOOK_URL,
+}
 
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -124,17 +132,64 @@ async def handle_chat(user_input: UserInput):
     full_history.extend(user_input.history)
     full_history.append({"role": "user", "content": user_input.message})
 
+# --- NOUVELLE FONCTION POUR EXÉCUTER LES OUTILS ---
+async def execute_tool(payload: dict):
+    """Analyse le payload et appelle le bon webhook n8n."""
+    tool = payload.get("tool")
+    webhook_url = WEBHOOKS.get(tool)
+
+    if not webhook_url:
+        logging.error(f"Outil inconnu demandé : '{tool}'")
+        return
+
+    logging.info(f"Exécution de l'outil '{tool}' en appelant le webhook...")
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(webhook_url, json=payload, timeout=30.0)
+            response.raise_for_status()
+        logging.info(f"Webhook pour l'outil '{tool}' appelé avec succès.")
+    except Exception as exc:
+        logging.error(f"Erreur lors de l'appel du webhook pour l'outil '{tool}': {exc}")
+
+# --- ENDPOINT /chat MIS À JOUR ---
+@app.post("/chat")
+async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks): # On ajoute BackgroundTasks
+    # ... (la première partie avec la préparation de la requête LLM ne change pas) ...
+    
     try:
         if LLM_BACKEND == "oobabooga":
             reply_text = await get_reply_from_oobabooga(user_input, full_history)
-        elif LLM_BACKEND == "gemini":
-            reply_text = await get_reply_from_gemini(user_input, user_input.history)
-        else:
-            raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement. Choisir 'oobabooga' ou 'gemini'.")
+        # ... (logique pour Gemini) ...
         
-        logging.info("Réponse générée avec succès.")
-        return {"reply": reply_text}
+        logging.info("Réponse brute de l'IA reçue. Analyse des actions...")
+
+        # --- NOUVELLE LOGIQUE DE DÉTECTION D'ACTION ---
+        action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
+        match = action_regex.search(reply_text)
+        
+        final_reply = reply_text
+
+        if match:
+            json_content = match.group(1).strip()
+            logging.info(f"Bloc d'action détecté : {json_content}")
+            
+            # On nettoie la réponse pour l'utilisateur
+            final_reply = action_regex.sub("", reply_text).strip()
+            if not final_reply: # Si l'IA n'a rien dit d'autre
+                final_reply = "Bien sûr, mon Roi. C'est fait."
+
+            try:
+                action_payload = json.loads(json_content)
+                # On lance l'exécution de l'outil en tâche de fond
+                background_tasks.add_task(execute_tool, action_payload)
+            except json.JSONDecodeError:
+                logging.error("Erreur de parsing du JSON dans le bloc d'action.")
+                final_reply = "J'ai essayé d'effectuer une action, mais le format était incorrect."
+
+        return {"reply": final_reply}
+
     except Exception as exc:
+        # ... (la gestion d'erreur reste la même) ...
         full_traceback = traceback.format_exc()
         error_details = f"Exception: {type(exc).__name__} | Message: {exc}"
         logging.error(f"Une erreur critique est survenue: {error_details}")
