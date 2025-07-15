@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 # --- CONFIGURATION ---
-APP_VERSION = "8.1"
+APP_VERSION = "8.1.1"
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
@@ -19,30 +19,7 @@ OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL")
 N8N_MEMORY_WEBHOOK_URL = os.getenv("N8N_MEMORY_WEBHOOK_URL")
 N8N_ACTION_WEBHOOK_URL = os.getenv("N8N_ACTION_WEBHOOK_URL")
 WEBHOOKS = {"memory_store": N8N_MEMORY_WEBHOOK_URL, "home_assistant": N8N_ACTION_WEBHOOK_URL}
-
-LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale du "Roi", ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes.
-
-Règles d'action :
-Quand une action doit être effectuée (contrôler un appareil, mémoriser une information), tu ne dois PAS la décrire dans ta réponse. À la place, tu dois répondre UNIQUEMENT et EXACTEMENT avec un bloc d'action spécial, comme suit :
-<|ACTION|>
-{
-  "tool": "outil_a_utiliser",
-  ...autres paramètres...
-}
-<|/ACTION|>
-
-Voici les outils disponibles :
-
-1.  **Outil `home_assistant` :** Pour contrôler les appareils de la maison.
-    -   **Paramètres requis :** `domain`, `service`, `entity_id`.
-    -   **Exemple :** <|ACTION|>{"tool": "home_assistant", "domain": "light", "service": "turn_on", "entity_id": "light.salon"}<|/ACTION|>
-
-2.  **Outil `memory_store` :** Pour enregistrer une information importante.
-    -   **Paramètre requis :** `text`.
-    -   **Exemple :** <|ACTION|>{"tool": "memory_store", "text": "Le mot de passe du Wi-Fi invité est 'BienvenueChezMoi'."}<|/ACTION|>
-
-Pour toutes les autres conversations, réponds normalement en langage naturel.
-"""
+LISA_SYSTEM_PROMPT = """Tu es Lisa... [votre prompt complet ici]..."""
 
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
