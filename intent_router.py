@@ -9,7 +9,7 @@ from pydantic import BaseModel
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "4.2" # Nouvelle version pour certifier la mise à jour
+APP_VERSION = "4.2"
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
@@ -22,8 +22,14 @@ LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de 
 
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
 
+# =================================================================================
+# MIDDLEWARE (CORS)
+# =================================================================================
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
+# =================================================================================
+# STRUCTURES DE DONNÉES
+# =================================================================================
 class UserInput(BaseModel):
     message: str
     history: list = []
@@ -34,6 +40,9 @@ class UserInput(BaseModel):
 
 async def get_reply_from_oobabooga(user_input: UserInput):
     """Prépare et envoie la requête à Oobabooga."""
+    if not OOBABOOGA_API_URL:
+        raise HTTPException(status_code=500, detail="OOBABOOGA_API_URL n'est pas configuré.")
+
     conversation_history = [{"role": "system", "content": LISA_SYSTEM_PROMPT}]
     conversation_history.extend(user_input.history)
     conversation_history.append({"role": "user", "content": user_input.message})
@@ -54,6 +63,9 @@ async def get_reply_from_oobabooga(user_input: UserInput):
 
 async def get_reply_from_gemini(user_input: UserInput):
     """Prépare et envoie la requête à l'API Gemini."""
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY n'est pas configuré.")
+
     gemini_history = []
     for item in user_input.history:
         role = "model" if item["role"] == "assistant" else "user"
@@ -94,7 +106,7 @@ async def handle_chat(user_input: UserInput):
         elif LLM_BACKEND == "gemini":
             reply_text = await get_reply_from_gemini(user_input)
         else:
-            raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement.")
+            raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement. Choisir 'oobabooga' ou 'gemini'.")
         
         logging.info("Réponse générée avec succès.")
         return {"reply": reply_text}
