@@ -18,7 +18,6 @@ LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
-# -- Configs des Backends et Webhooks --
 OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL")
 OOBABOOGA_MODEL_NAME = os.getenv("OOBABOOGA_MODEL_NAME", "L3.3-70B-Magnum-Diamond-Q5_K_S.gguf")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -63,6 +62,33 @@ class UserInput(BaseModel):
 # FONCTIONS
 # =================================================================================
 
+async def get_relevant_memories(query: str) -> str:
+    # Appelle le workflow n8n pour récupérer les souvenirs pertinents.
+    if not N8N_RETRIEVAL_WEBHOOK_URL:
+        logging.warning("Récupération de mémoire désactivée (URL non configurée).")
+        return ""
+
+    logging.info(f"Récupération de la mémoire pour la question : '{query}'")
+    try:
+        payload = {"query": query}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(N8N_RETRIEVAL_WEBHOOK_URL, json=payload, timeout=30.0)
+            response.raise_for_status()
+            data = response.json()
+            
+            documents = data.get("documents", [[]])[0]
+            if not documents:
+                logging.info("Aucun souvenir pertinent trouvé.")
+                return ""
+
+            context_header = "Contexte pertinent de ta mémoire (utilise ces informations pour formuler ta réponse) :\n"
+            formatted_memories = "\n".join([f"- {doc}" for doc in documents])
+            logging.info(f"Souvenirs trouvés : {formatted_memories}")
+            return context_header + formatted_memories
+    except Exception as exc:
+        logging.error(f"Erreur lors de la récupération de la mémoire : {exc}")
+        return ""
+    
 async def get_relevant_memories(query: str) -> str:
     """Appelle le workflow n8n pour récupérer les souvenirs pertinents."""
     if not N8N_RETRIEVAL_WEBHOOK_URL:
@@ -135,16 +161,22 @@ async def startup_event():
     # ... (code de startup identique, ne change pas)
     pass
 
+# =================================================================================
+# ENDPOINT PRINCIPAL (/chat) - MIS À JOUR
+# =================================================================================
+
 @app.post("/chat")
 async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
     logging.info(f"Requête reçue, backend: {LLM_BACKEND}, message: '{user_input.message}'")
     
     try:
-        # 1. Récupérer les souvenirs pertinents
+        # 1. RÉCUPÉRER LE CONTEXTE DE LA MÉMOIRE
         retrieved_context = await get_relevant_memories(user_input.message)
+        
+        # 2. CONSTRUIRE LE PROMPT FINAL
         final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
-                
-        # 2. Appeler le LLM
+        
+        # 3. APPELER LE LLM AVEC LE CONTEXTE ENRICHI
         raw_reply = ""
         if LLM_BACKEND == "oobabooga":
             history_for_llm = [{"role": "system", "content": final_system_prompt}]
@@ -181,3 +213,4 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         logging.error(f"Une erreur critique est survenue: {error_details}")
         logging.debug(f"Traceback complet : {full_traceback}")
         raise HTTPException(status_code=502, detail={"error": "Erreur de communication avec le backend IA.", "details": error_details})
+        pass
