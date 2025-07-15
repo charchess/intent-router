@@ -66,7 +66,7 @@ class UserInput(BaseModel):
 async def get_relevant_memories(query: str) -> str:
     """Appelle le workflow n8n pour récupérer les souvenirs pertinents."""
     if not N8N_RETRIEVAL_WEBHOOK_URL:
-        logging.warning("N8N_RETRIEVAL_WEBHOOK_URL n'est pas configuré. La récupération de mémoire est désactivée.")
+        logging.warning("Récupération de mémoire désactivée (URL non configurée).")
         return ""
 
     logging.info(f"Récupération de la mémoire pour la question : '{query}'")
@@ -143,7 +143,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         # 1. Récupérer les souvenirs pertinents
         retrieved_context = await get_relevant_memories(user_input.message)
         final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
-        
+                
         # 2. Appeler le LLM
         raw_reply = ""
         if LLM_BACKEND == "oobabooga":
