@@ -11,7 +11,7 @@ from pydantic import BaseModel
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "10.0"
+APP_VERSION = "11.0" # Version avec mémoire proactive
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
@@ -51,6 +51,18 @@ Voici les outils disponibles :
 Pour toutes les autres conversations, réponds normalement en langage naturel.
 """
 
+# NOUVEAU PROMPT pour l'analyseur de mémoire
+MEMORY_ANALYZER_PROMPT = """Analyse la dernière phrase de l'utilisateur. Détermine si elle contient une information factuelle, une préférence, ou une donnée importante qui doit être mémorisée. Si oui, extrais cette information sous une forme déclarative claire.
+Exemples:
+- Utilisateur: "mon projet secret s'appelle Phénix" -> Fait: "Le projet secret de l'utilisateur s'appelle Phénix."
+- Utilisateur: "je déteste les oignons" -> Fait: "L'utilisateur déteste les oignons."
+- Utilisateur: "le code du garage est 1234" -> Fait: "Le code du garage est 1234."
+- Utilisateur: "quelle heure est-il ?" -> Fait: null
+
+Réponds UNIQUEMENT en JSON avec la structure {"fact_to_memorize": "Le fait extrait" ou null}.
+"""
+
+
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
@@ -61,6 +73,36 @@ class UserInput(BaseModel):
 # =================================================================================
 # FONCTIONS
 # =================================================================================
+
+async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
+    """Analyse le message et lance la mémorisation si nécessaire."""
+    if not N8N_MEMORY_WEBHOOK_URL: return
+
+    # On utilise Gemini pour cette tâche car il est rapide
+    if not GEMINI_API_KEY: return
+    
+    # On construit un payload simple pour l'analyse
+    payload = { "contents": [{"parts": [{"text": f"{MEMORY_ANALYZER_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}] }
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, json=payload, timeout=20.0)
+            response.raise_for_status()
+            ai_response = response.json()
+            
+            # On parse la réponse JSON de l'analyseur
+            analysis_text = ai_response["candidates"][0]["content"]["parts"][0]["text"]
+            analysis_json = json.loads(analysis_text.strip())
+            
+            fact = analysis_json.get("fact_to_memorize")
+            if fact:
+                logging.info(f"Fait détecté pour mémorisation : '{fact}'")
+                # On lance l'écriture en tâche de fond
+                action_payload = {"tool": "memory_store", "text": fact}
+                background_tasks.add_task(execute_tool, action_payload)
+    except Exception as exc:
+        logging.error(f"Erreur durant l'analyse de mémoire : {exc}")
 
 async def get_relevant_memories(query: str) -> str:
     # Appelle le workflow n8n pour récupérer les souvenirs pertinents.
@@ -167,16 +209,20 @@ async def startup_event():
 
 @app.post("/chat")
 async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
-    logging.info(f"Requête reçue, backend: {LLM_BACKEND}, message: '{user_input.message}'")
-    
+    logging.info(f"Requête reçue pour /chat. Message: '{user_input.message}'")
+
+    # 1. On lance l'analyse de mémorisation en tâche de fond.
+    #    Cela n'attendra pas la fin de l'analyse pour continuer.
+    background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
+
     try:
-        # 1. RÉCUPÉRER LE CONTEXTE DE LA MÉMOIRE
+        # 2. On récupère les souvenirs pertinents (RAG) comme avant.
         retrieved_context = await get_relevant_memories(user_input.message)
         
-        # 2. CONSTRUIRE LE PROMPT FINAL
+        # 3. On construit le prompt final pour l'IA qui va répondre.
         final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
         
-        # 3. APPELER LE LLM AVEC LE CONTEXTE ENRICHI
+        # 4. On appelle le LLM choisi pour générer la réponse à l'utilisateur.
         raw_reply = ""
         if LLM_BACKEND == "oobabooga":
             history_for_llm = [{"role": "system", "content": final_system_prompt}]
@@ -188,29 +234,29 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         else:
             raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement.")
             
-        # 3. Analyser la réponse pour une action
+        # 5. On analyse la réponse de l'IA pour d'éventuelles actions explicites (<|ACTION|>).
         action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
         match = action_regex.search(raw_reply)
         final_reply_text = raw_reply
 
         if match:
             json_content = match.group(1).strip()
-            logging.info(f"Bloc d'action détecté: {json_content}")
-            final_reply_text = action_regex.sub("", raw_reply).strip() or "Bien sûr, mon Roi. C'est en cours."
+            logging.info(f"Bloc d'action explicite détecté: {json_content}")
+            final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
             try:
                 action_payload = json.loads(json_content)
                 background_tasks.add_task(execute_tool, action_payload)
             except json.JSONDecodeError:
-                logging.error("Erreur de parsing JSON dans le bloc d'action.")
+                logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
                 final_reply_text = "J'ai tenté une action, mais son format était invalide."
         
-        logging.info(f"Réponse finale envoyée: '{final_reply_text}'")
+        logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
         return {"reply": final_reply_text}
 
     except Exception as exc:
         full_traceback = traceback.format_exc()
         error_details = f"Exception: {type(exc).__name__} | Message: {exc}"
-        logging.error(f"Une erreur critique est survenue: {error_details}")
+        logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
         logging.debug(f"Traceback complet : {full_traceback}")
-        raise HTTPException(status_code=502, detail={"error": "Erreur de communication avec le backend IA.", "details": error_details})
-        pass
+        raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
+    
