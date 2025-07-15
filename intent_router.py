@@ -9,30 +9,21 @@ from pydantic import BaseModel
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "4.1"
+APP_VERSION = "4.2" # Nouvelle version pour certifier la mise à jour
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
-# -- Config Oobabooga --
 OOBABOOGA_API_URL = os.getenv("OOBABOOGA_API_URL")
-# -- Config Gemini --
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab...""" # Mettez votre prompt complet ici
+LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale de ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes."""
 
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
 
-# =================================================================================
-# MIDDLEWARE (CORS)
-# =================================================================================
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# =================================================================================
-# STRUCTURES DE DONNÉES
-# =================================================================================
 class UserInput(BaseModel):
     message: str
     history: list = []
@@ -83,14 +74,20 @@ async def get_reply_from_gemini(user_input: UserInput):
 # =================================================================================
 # DÉMARRAGE ET ENDPOINT PRINCIPAL
 # =================================================================================
+
 @app.on_event("startup")
 async def startup_event():
     logging.info(f"--- Intent Router - Version {APP_VERSION} ---")
-    # ... (le reste de la fonction startup ne change pas)
+    logging.info(f"Backend LLM sélectionné : {LLM_BACKEND}")
+    if LLM_BACKEND == "oobabooga" and not OOBABOOGA_API_URL:
+        logging.error("ERREUR FATALE: OOBABOOGA_API_URL n'est pas définie !")
+    if LLM_BACKEND == "gemini" and not GEMINI_API_KEY:
+        logging.error("ERREUR FATALE: GEMINI_API_KEY n'est pas définie !")
+    logging.info("---------------------")
 
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
-    logging.info(f"Requête reçue pour /chat. Backend sélectionné : {LLM_BACKEND}")
+    logging.info(f"Requête reçue pour /chat.")
     try:
         if LLM_BACKEND == "oobabooga":
             reply_text = await get_reply_from_oobabooga(user_input)
