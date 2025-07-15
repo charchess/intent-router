@@ -38,7 +38,6 @@ class UserInput(BaseModel):
 
 @app.on_event("startup")
 async def startup_event():
-    """Vérifie la configuration au démarrage."""
     logging.info(f"--- Intent Router - Version {APP_VERSION} ---")
     if not OOBABOOGA_API_URL:
         logging.error("ERREUR FATALE: La variable d'environnement OOBABOOGA_API_URL n'est pas définie !")
@@ -48,7 +47,6 @@ async def startup_event():
 
 @app.post("/chat")
 async def handle_chat(user_input: UserInput):
-    """Reçoit une requête, l'envoie à Oobabooga, et renvoie la réponse."""
     logging.info(f"Requête reçue pour /chat : '{user_input.message}'")
 
     if not OOBABOOGA_API_URL:
