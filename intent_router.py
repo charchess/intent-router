@@ -93,8 +93,16 @@ async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTa
             
             # On parse la réponse JSON de l'analyseur
             analysis_text = ai_response["candidates"][0]["content"]["parts"][0]["text"]
-            analysis_json = json.loads(analysis_text.strip())
-            
+
+            # On nettoie la réponse de Gemini pour extraire le JSON
+            match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
+            if not match:
+                logging.warning(f"Aucun JSON trouvé dans la réponse de l'analyseur : {analysis_text}")
+                return
+                
+            cleaned_text = match.group(0)
+            analysis_json = json.loads(cleaned_text)
+
             fact = analysis_json.get("fact_to_memorize")
             if fact:
                 logging.info(f"Fait détecté pour mémorisation : '{fact}'")
