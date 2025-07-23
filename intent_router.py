@@ -70,6 +70,8 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 class UserInput(BaseModel):
     message: str
+    session_id: str | None = None # Permet de recevoir le session_id du client
+
 
 # =================================================================================
 # FONCTIONS
@@ -240,7 +242,8 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
 
     # On définit un ID de session. Pour l'instant, il est fixe.
     # Plus tard, il viendra d'un système d'authentification.
-    session_id = user_input.session_id or "default_session"
+    session_id = user_input.session_id or str(uuid.uuid4())
+    logging.info(f"Utilisation de la session ID: {session_id}")
 
     # 1. On lance l'analyse de mémorisation proactive (RAG) en tâche de fond.
     background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
@@ -255,22 +258,22 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         # 4. On construit le prompt final.
         final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
         
-        # ... (La logique d'appel à Oobabooga ou Gemini ne change pas, mais utilise "conversation_history" au lieu de "user_input.history")
-        if LLM_BACKEND == "oobabooga":
+        # 5. On appelle le LLM choisi.
+        raw_reply = ""
+
+if LLM_BACKEND == "oobabooga":
             history_for_llm = [{"role": "system", "content": final_system_prompt}]
-            history_for_llm.extend(conversation_history) # UTILISE L'HISTORIQUE DE ZEP
+            history_for_llm.extend(conversation_history)
             history_for_llm.append({"role": "user", "content": user_input.message})
             raw_reply = await get_reply_from_oobabooga(history_for_llm)
         elif LLM_BACKEND == "gemini":
-            # Pour Gemini, la structure est un peu différente
             gemini_history = []
-            for item in conversation_history: # UTILISE L'HISTORIQUE DE ZEP
+            for item in conversation_history:
                 role = "model" if item["role"] == "assistant" else "user"
                 gemini_history.append({"role": role, "parts": [{"text": item["content"]}]})
             gemini_history.append({"role": "user", "parts": [{"text": user_input.message}]})
+            
             payload = {"contents": gemini_history, "systemInstruction": {"parts": [{"text": final_system_prompt}]}}
-            #... (le reste de la fonction get_reply_from_gemini doit être adapté pour accepter ce payload)
-            # Pour simplifier, nous allons modifier directement ici
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
             timeout = httpx.Timeout(60.0, connect=10.0)
             async with httpx.AsyncClient(timeout=timeout) as client:
@@ -280,10 +283,9 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                 raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "Erreur: Réponse Gemini malformée.")
 
         # 6. On analyse la réponse pour les actions.
-        # ... (la logique de détection d'<|ACTION|> ne change pas)
         action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
         match = action_regex.search(raw_reply)
-        final_reply_text = raw_reply
+        final_reply_text = raw_reply.strip()
          
         if match:
             json_content = match.group(1).strip()
@@ -300,7 +302,9 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         background_tasks.add_task(add_zep_messages, session_id, user_input.message, final_reply_text)
         
         logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
-        return {"reply": final_reply_text}
+        # MODIFICATION ICI : On renvoie le session_id au client pour qu'il puisse le réutiliser
+        return {"reply": final_reply_text, "session_id": session_id}
+
 
     except Exception as exc:
         full_traceback = traceback.format_exc()
