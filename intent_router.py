@@ -1,3 +1,6 @@
+# intent-router.py
+
+# ... (autres imports)
 import os
 import httpx
 import traceback
@@ -15,11 +18,11 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.6"  # Version avec débogage optionnel, gestion des erreurs et commandes
+APP_VERSION = "13.7"  # Version avec débogage optionnel, gestion des erreurs et commandes
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"  # Pour le logging de base
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # Pour un débogage plus poussé
-LOG_LEVEL = logging.DEBUG if (VERBOSE or DEBUG) else logging.INFO  # Ajustement du niveau de log
+LOG_LEVEL = logging.DEBUG if (VERBOSE or DEBUG) else logging.INFO
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
@@ -184,6 +187,7 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
 
                 return False  # Indique l'échec de l'opération
 
+
 async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
     if not N8N_MEMORY_WEBHOOK_URL:
         return
@@ -278,12 +282,12 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
 
             # Exécuter la commande
             if command == "debug":
-                debug_level = int(args.get("level", 1)) # Debug level 1 par defaut
+                debug_level = int(args.get("level", 1))
                 logging.info(f"Activation du débogage (niveau {debug_level})...")
-                # Ajouter du code de debogage en fonction de l'argument.
-                final_reply_text = f"Débogage activé (niveau {debug_level})."
                 # Mettre en place le systeme de log en fonction du debug_level
-
+                final_reply_text = f"Débogage activé (niveau {debug_level})."
+            elif command == "version":
+                final_reply_text = f"Version de l'application: {APP_VERSION}"
             else:
                 final_reply_text = f"Commande inconnue : '{command}'"
         except Exception as e:
