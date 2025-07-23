@@ -5,6 +5,7 @@ import logging
 import re
 import json
 import uuid
+import time
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -90,8 +91,8 @@ class UserInput(BaseModel):
 # =================================================================================
 # FONCTIONS
 # =================================================================================
-async def extract_and_store_graph_data(user_message: str):
-    """Extrait les relations du message et les stocke dans Neo4j."""
+async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_delay=1):
+    """Extrait les relations du message et les stocke dans Neo4j, avec tentatives."""
     if not all([NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, GEMINI_API_KEY]):
         logging.warning("Extraction graphe désactivée (configuration manquante).")
         return
@@ -108,54 +109,63 @@ async def extract_and_store_graph_data(user_message: str):
             response.raise_for_status()
             ai_response = response.json()
             analysis_text = ai_response["candidates"][0]["content"]["parts"][0]["text"]
-
             match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
+
             if not match:
                 logging.info("Aucun triplet trouvé par l'extracteur de graphe.")
                 return
             extracted_data = json.loads(match.group(0))
             triplets = extracted_data.get("triplets", [])
-
             if DEBUG:
                 logging.debug(f"Triplets extraits : {triplets}")
-
             if not triplets:
                 logging.info("La liste des triplets est vide.")
                 return
 
-        # 2. Se connecter à Neo4j et mettre à jour le graphe
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-        with driver.session() as session:
-            for triplet in triplets:
-                sujet = triplet.get('sujet')
-                relation = triplet.get('relation')
-                objet = triplet.get('objet')
-
-                if not all([sujet, relation, objet]):
-                    if DEBUG:
-                        logging.warning(f"Triplet incomplet ignoré: {triplet}")
-                    continue
-
-                # Sécurisation simple du nom de la relation pour éviter les injections Cypher
-                relation_safe = re.sub(r'[^A-Z0-9_]', '', relation.upper())
-                if not relation_safe:
-                    if DEBUG:
-                        logging.warning(f"Relation invalide ignorée: {relation}")
-                    continue
-
-                logging.info(f"Ajout au graphe: ({sujet})-[{relation_safe}]->({objet})")
-                query = (
-                    f"MERGE (s:Entite {{nom: $sujet}}) "
-                    f"MERGE (o:Entite {{nom: $objet}}) "
-                    f"MERGE (s)-[r:{relation_safe}]->(o) "
-                    "ON CREATE SET r.poids = 1, r.cree_le = timestamp(), r.mis_a_jour_le = timestamp() "
-                    "ON MATCH SET r.poids = r.poids + 1, r.mis_a_jour_le = timestamp()"
-                )
-                session.run(query, sujet=sujet, objet=objet)
-        driver.close()
-
     except Exception as exc:
-        logging.error(f"Erreur durant l'extraction et stockage de graphe: {exc}")
+        logging.error(f"Erreur lors de l'extraction des triplets: {exc}")
+        return
+
+    # 2. Se connecter à Neo4j et mettre à jour le graphe (avec tentatives)
+    for attempt in range(max_retries):
+        try:
+            driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+            with driver.session() as session:
+                for triplet in triplets:
+                    sujet = triplet.get('sujet')
+                    relation = triplet.get('relation')
+                    objet = triplet.get('objet')
+
+                    if not all([sujet, relation, objet]):
+                        if DEBUG:
+                            logging.warning(f"Triplet incomplet ignoré: {triplet}")
+                        continue
+
+                    # Sécurisation de la relation
+                    relation_safe = re.sub(r'[^A-Z0-9_]', '', relation.upper())
+                    if not relation_safe:
+                        if DEBUG:
+                            logging.warning(f"Relation invalide ignorée: {relation}")
+                        continue
+
+                    logging.info(f"Ajout au graphe (tentative {attempt + 1}/{max_retries}): ({sujet})-[{relation_safe}]->({objet})")
+                    query = (
+                        f"MERGE (s:Entite {{nom: $sujet}}) "
+                        f"MERGE (o:Entite {{nom: $objet}}) "
+                        f"MERGE (s)-[r:{relation_safe}]->(o) "
+                        "ON CREATE SET r.poids = 1, r.cree_le = datetime(), r.derniere_utilisation = datetime(), r.mis_a_jour_le = datetime() " # Ajouter le timestamp de creation
+                        "ON MATCH SET r.poids = r.poids + 1, r.derniere_utilisation = datetime(), r.mis_a_jour_le = datetime()"
+                    )
+                    session.run(query, sujet=sujet, objet=objet)
+            driver.close()
+            return  # Si tout se passe bien, on sort de la boucle
+        except Exception as exc:
+            logging.error(f"Erreur lors de la connexion ou de l'écriture dans Neo4j (tentative {attempt + 1}/{max_retries}): {exc}")
+            if attempt < max_retries - 1:  # Ne pas attendre à la dernière tentative
+                logging.info(f"Nouvelle tentative dans {retry_delay} secondes...")
+                time.sleep(retry_delay)
+            else:
+                logging.error(f"Échec persistant de l'écriture dans Neo4j après {max_retries} tentatives.")
 
 
 async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
