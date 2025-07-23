@@ -2,3 +2,5 @@ fastapi
 uvicorn
 httpx
 pydantic
+neo4j
+uuid
