@@ -4,6 +4,7 @@ import traceback
 import logging
 import re
 import json
+import uuid
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,7 +12,7 @@ from pydantic import BaseModel
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "11.0" # Version avec mémoire proactive
+APP_VERSION = "12.0" # Version avec mémoire proactive
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
@@ -25,6 +26,7 @@ GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
 N8N_MEMORY_WEBHOOK_URL = os.getenv("N8N_MEMORY_WEBHOOK_URL")
 N8N_ACTION_WEBHOOK_URL = os.getenv("N8N_ACTION_WEBHOOK_URL")
 N8N_RETRIEVAL_WEBHOOK_URL = os.getenv("N8N_RETRIEVAL_WEBHOOK_URL")
+ZEP_API_URL = os.getenv("ZEP_API_URL") # Par exemple: http://zep:8000
 
 WEBHOOKS = {"memory_store": N8N_MEMORY_WEBHOOK_URL, "home_assistant": N8N_ACTION_WEBHOOK_URL}
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale du "Roi", ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes.
@@ -68,11 +70,49 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 
 class UserInput(BaseModel):
     message: str
-    history: list = []
 
 # =================================================================================
 # FONCTIONS
 # =================================================================================
+
+async def get_zep_memory(session_id: str) -> list:
+    """Récupère l'historique de conversation depuis Zep."""
+    if not ZEP_API_URL: return []
+    
+    url = f"{ZEP_API_URL}/api/v1/sessions/{session_id}/messages?limit=20"
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(url, timeout=10.0)
+            if response.status_code == 404:
+                logging.info(f"Aucune session Zep trouvée pour {session_id}. Une nouvelle sera créée.")
+                return []
+            response.raise_for_status()
+            data = response.json()
+            # Transformer la réponse de Zep au format attendu par les LLMs
+            history = [{"role": msg["role"], "content": msg["content"]} for msg in data.get("messages", [])]
+            logging.info(f"{len(history)} messages récupérés de Zep pour la session {session_id}.")
+            return history
+    except Exception as exc:
+        logging.error(f"Erreur lors de la récupération de la mémoire Zep : {exc}")
+        return []
+
+async def add_zep_messages(session_id: str, user_message: str, ai_message: str):
+    """Ajoute les messages utilisateur et IA à la mémoire Zep."""
+    if not ZEP_API_URL: return
+    
+    url = f"{ZEP_API_URL}/api/v1/sessions/{session_id}/messages"
+    payload = {
+        "messages": [
+            {"role": "user", "content": user_message},
+            {"role": "assistant", "content": ai_message}
+        ]
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(url, json=payload, timeout=10.0)
+        logging.info(f"Messages ajoutés à la session Zep {session_id}.")
+    except Exception as exc:
+        logging.error(f"Erreur lors de l'ajout des messages à Zep : {exc}")
 
 async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
     """Analyse le message et lance la mémorisation si nécessaire."""
@@ -112,33 +152,6 @@ async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTa
     except Exception as exc:
         logging.error(f"Erreur durant l'analyse de mémoire : {exc}")
 
-async def get_relevant_memories(query: str) -> str:
-    # Appelle le workflow n8n pour récupérer les souvenirs pertinents.
-    if not N8N_RETRIEVAL_WEBHOOK_URL:
-        logging.warning("Récupération de mémoire désactivée (URL non configurée).")
-        return ""
-
-    logging.info(f"Récupération de la mémoire pour la question : '{query}'")
-    try:
-        payload = {"query": query}
-        async with httpx.AsyncClient() as client:
-            response = await client.post(N8N_RETRIEVAL_WEBHOOK_URL, json=payload, timeout=30.0)
-            response.raise_for_status()
-            data = response.json()
-            
-            documents = data.get("documents", [[]])[0]
-            if not documents:
-                logging.info("Aucun souvenir pertinent trouvé.")
-                return ""
-
-            context_header = "Contexte pertinent de ta mémoire (utilise ces informations pour formuler ta réponse) :\n"
-            formatted_memories = "\n".join([f"- {doc}" for doc in documents])
-            logging.info(f"Souvenirs trouvés : {formatted_memories}")
-            return context_header + formatted_memories
-    except Exception as exc:
-        logging.error(f"Erreur lors de la récupération de la mémoire : {exc}")
-        return ""
-    
 async def get_relevant_memories(query: str) -> str:
     """Appelle le workflow n8n pour récupérer les souvenirs pertinents."""
     if not N8N_RETRIEVAL_WEBHOOK_URL:
@@ -208,7 +221,13 @@ async def execute_tool(payload: dict):
 # =================================================================================
 @app.on_event("startup")
 async def startup_event():
-    # ... (code de startup identique, ne change pas)
+    logging.info(f"--- Intent Router - Version {APP_VERSION} ---")
+    logging.info(f"Backend LLM sélectionné : {LLM_BACKEND}")
+    if LLM_BACKEND == "oobabooga" and not OOBABOOGA_API_URL:
+        logging.error("AVERTISSEMENT: OOBABOOGA_API_URL n'est pas définie !")
+    if LLM_BACKEND == "gemini" and not GEMINI_API_KEY:
+        logging.error("AVERTISSEMENT: GEMINI_API_KEY n'est pas définie !")
+    logging.info("---------------------------------------------")
     pass
 
 # =================================================================================
@@ -219,34 +238,53 @@ async def startup_event():
 async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
     logging.info(f"Requête reçue pour /chat. Message: '{user_input.message}'")
 
-    # 1. On lance l'analyse de mémorisation en tâche de fond.
-    #    Cela n'attendra pas la fin de l'analyse pour continuer.
+    # On définit un ID de session. Pour l'instant, il est fixe.
+    # Plus tard, il viendra d'un système d'authentification.
+    session_id = user_input.session_id or "default_session"
+
+    # 1. On lance l'analyse de mémorisation proactive (RAG) en tâche de fond.
     background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
 
     try:
-        # 2. On récupère les souvenirs pertinents (RAG) comme avant.
+        # 2. On récupère la mémoire de CONVERSATION depuis ZEP
+        conversation_history = await get_zep_memory(session_id)
+        
+        # 3. On récupère les souvenirs pertinents (RAG) comme avant.
         retrieved_context = await get_relevant_memories(user_input.message)
         
-        # 3. On construit le prompt final pour l'IA qui va répondre.
+        # 4. On construit le prompt final.
         final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
         
-        # 4. On appelle le LLM choisi pour générer la réponse à l'utilisateur.
-        raw_reply = ""
+        # ... (La logique d'appel à Oobabooga ou Gemini ne change pas, mais utilise "conversation_history" au lieu de "user_input.history")
         if LLM_BACKEND == "oobabooga":
             history_for_llm = [{"role": "system", "content": final_system_prompt}]
-            history_for_llm.extend(user_input.history)
+            history_for_llm.extend(conversation_history) # UTILISE L'HISTORIQUE DE ZEP
             history_for_llm.append({"role": "user", "content": user_input.message})
             raw_reply = await get_reply_from_oobabooga(history_for_llm)
         elif LLM_BACKEND == "gemini":
-            raw_reply = await get_reply_from_gemini(user_input, final_system_prompt)
-        else:
-            raise HTTPException(status_code=500, detail="LLM_BACKEND non configuré correctement.")
-            
-        # 5. On analyse la réponse de l'IA pour d'éventuelles actions explicites (<|ACTION|>).
+            # Pour Gemini, la structure est un peu différente
+            gemini_history = []
+            for item in conversation_history: # UTILISE L'HISTORIQUE DE ZEP
+                role = "model" if item["role"] == "assistant" else "user"
+                gemini_history.append({"role": role, "parts": [{"text": item["content"]}]})
+            gemini_history.append({"role": "user", "parts": [{"text": user_input.message}]})
+            payload = {"contents": gemini_history, "systemInstruction": {"parts": [{"text": final_system_prompt}]}}
+            #... (le reste de la fonction get_reply_from_gemini doit être adapté pour accepter ce payload)
+            # Pour simplifier, nous allons modifier directement ici
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+            timeout = httpx.Timeout(60.0, connect=10.0)
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.post(url, json=payload)
+                response.raise_for_status()
+                ai_response = response.json()
+                raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "Erreur: Réponse Gemini malformée.")
+
+        # 6. On analyse la réponse pour les actions.
+        # ... (la logique de détection d'<|ACTION|> ne change pas)
         action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
         match = action_regex.search(raw_reply)
         final_reply_text = raw_reply
-
+         
         if match:
             json_content = match.group(1).strip()
             logging.info(f"Bloc d'action explicite détecté: {json_content}")
@@ -257,6 +295,9 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             except json.JSONDecodeError:
                 logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
                 final_reply_text = "J'ai tenté une action, mais son format était invalide."
+        
+        # 7. On sauvegarde la conversation DANS ZEP en tâche de fond
+        background_tasks.add_task(add_zep_messages, session_id, user_input.message, final_reply_text)
         
         logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
         return {"reply": final_reply_text}
