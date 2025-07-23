@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.2"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -100,7 +100,7 @@ async def startup_event():
         logging.error("AVERTISSEMENT: OOBABOOGA_API_URL n'est pas définie !")
     if LLM_BACKEND == "gemini" and not GEMINI_API_KEY:
         logging.error("AVERTISSEMENT: GEMINI_API_KEY n'est pas définie !")
-    logging.info("---------------------------------------------")**
+    logging.info("---------------------------------------------")
 
 # =================================================================================
 # FONCTIONS
