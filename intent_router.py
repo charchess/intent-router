@@ -6,6 +6,7 @@ import re
 import json
 import uuid
 import time
+import shlex  # Pour le parsing des commandes
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.1"  # Version avec débogage optionnel
+APP_VERSION = "13.4"  # Version avec débogage optionnel, gestion des erreurs et commandes
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"  # Pour le logging de base
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # Pour un débogage plus poussé
@@ -33,7 +34,7 @@ NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
 
-WEBHOOKS = {"memory_store": N8N_MEMORY_WEBHOOK_URL, "home_assistant": N8N_ACTION_WEBHOOK_URL}
+WEBHOOKS = {"memory_store": N8N_MEMORY_WEBHOOK_URL, "home_assistant": N8N_ACTION_WEBHOOK_URL, "memory_store_error": N8N_ACTION_WEBHOOK_URL}
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale du "Roi", ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes.
 
 Règles d'action :
@@ -95,7 +96,7 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
     """Extrait les relations du message et les stocke dans Neo4j, avec tentatives."""
     if not all([NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, GEMINI_API_KEY]):
         logging.warning("Extraction graphe désactivée (configuration manquante).")
-        return
+        return False
 
     logging.info(f"Début de l'extraction de graphe pour: '{user_message}'")
 
@@ -113,18 +114,19 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
 
             if not match:
                 logging.info("Aucun triplet trouvé par l'extracteur de graphe.")
-                return
+                return False
             extracted_data = json.loads(match.group(0))
             triplets = extracted_data.get("triplets", [])
+
             if DEBUG:
                 logging.debug(f"Triplets extraits : {triplets}")
             if not triplets:
                 logging.info("La liste des triplets est vide.")
-                return
+                return False
 
     except Exception as exc:
         logging.error(f"Erreur lors de l'extraction des triplets: {exc}")
-        return
+        return False
 
     # 2. Se connecter à Neo4j et mettre à jour le graphe (avec tentatives)
     for attempt in range(max_retries):
@@ -158,7 +160,7 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
                     )
                     session.run(query, sujet=sujet, objet=objet)
             driver.close()
-            return  # Si tout se passe bien, on sort de la boucle
+            return True  # Si tout se passe bien, on sort de la boucle
         except Exception as exc:
             logging.error(f"Erreur lors de la connexion ou de l'écriture dans Neo4j (tentative {attempt + 1}/{max_retries}): {exc}")
             if attempt < max_retries - 1:  # Ne pas attendre à la dernière tentative
@@ -166,6 +168,16 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
                 time.sleep(retry_delay)
             else:
                 logging.error(f"Échec persistant de l'écriture dans Neo4j après {max_retries} tentatives.")
+                # Envoi d'un message d'erreur à l'interface
+                action_payload = {
+                    "tool": "memory_store_error",
+                    "message": f"Impossible d'ajouter l'information au graphe (erreur Neo4j). Réessayez plus tard."
+                }
+                try:
+                    await execute_tool(action_payload)
+                except Exception as exc2:
+                    logging.error(f"Erreur lors de l'envoi de l'erreur via le webhook: {exc2}")
+                return False  # Indique l'échec de l'opération
 
 
 async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
@@ -186,7 +198,7 @@ async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTa
 
             match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
             if not match:
-                logging.warning(f"Aucun JSON trouvé dans la réponse de l'analyseur : {analysis_text}")
+                logging.info("Aucun JSON trouvé dans la réponse de l'analyseur.")
                 return
 
             cleaned_text = match.group(0)
@@ -248,67 +260,58 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
 
     # 1. Lancement des routines de mémorisation en tâche de fond
     background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
-    background_tasks.add_task(extract_and_store_graph_data, user_input.message)
+    result = await extract_and_store_graph_data(user_input.message) # On recupere le resultat
 
-    try:
-        # 2. Récupération du contexte RAG pour la réponse immédiate
-        retrieved_context = await get_relevant_memories(user_input.message)
+    # 2. Récupération du contexte RAG pour la réponse immédiate
+    retrieved_context = await get_relevant_memories(user_input.message)
 
-        # 3. Construction du prompt final
-        final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
+    # 3. Construction du prompt final
+    final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
 
-        # 4. Appel au LLM pour la génération de la réponse
-        raw_reply = ""
+    # 4. Appel au LLM pour la génération de la réponse
+    raw_reply = ""
+    if LLM_BACKEND == "gemini":
+        payload = {
+            "contents": [{"role": "user", "parts": [{"text": user_input.message}]}],
+            "systemInstruction": {"parts": [{"text": final_system_prompt}]}
+        }
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            ai_response = response.json()
+            raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+    else:  # Oobabooga ou autre
+        payload = {
+            "model": OOBABOOGA_MODEL_NAME,
+            "messages": [
+                {"role": "system", "content": final_system_prompt},
+                {"role": "user", "content": user_input.message}
+            ],
+            "max_tokens": 500,
+            "temperature": 0.7
+        }
+        async with httpx.AsyncClient(timeout=300.0) as client:
+            response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=payload)
+            response.raise_for_status()
+            ai_response = response.json()
+            raw_reply = ai_response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-        if LLM_BACKEND == "gemini":
-            payload = {
-                "contents": [{"role": "user", "parts": [{"text": user_input.message}]}],
-                "systemInstruction": {"parts": [{"text": final_system_prompt}]}
-            }
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(url, json=payload)
-                response.raise_for_status()
-                ai_response = response.json()
-                raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        else:  # Oobabooga ou autre
-            payload = {
-                "model": OOBABOOGA_MODEL_NAME,
-                "messages": [
-                    {"role": "system", "content": final_system_prompt},
-                    {"role": "user", "content": user_input.message}
-                ],
-                "max_tokens": 500,
-                "temperature": 0.7
-            }
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=payload)
-                response.raise_for_status()
-                ai_response = response.json()
-                raw_reply = ai_response.get("choices", [{}])[0].get("message", {}).get("content", "")
+    # 5. Analyse de la réponse pour les actions <|ACTION|>
+    action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
+    match = action_regex.search(raw_reply)
+    final_reply_text = raw_reply.strip()
 
-        # 5. Analyse de la réponse pour les actions <|ACTION|>
-        action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
-        match = action_regex.search(raw_reply)
-        final_reply_text = raw_reply.strip()
+    if match:
+        json_content = match.group(1).strip()
+        logging.info(f"Bloc d'action explicite détecté: {json_content}")
+        final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
+        try:
+            action_payload = json.loads(json_content)
+            background_tasks.add_task(execute_tool, action_payload)
+        except json.JSONDecodeError:
+            logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
+            final_reply_text = "J'ai tenté une action, mais son format était invalide."
 
-        if match:
-            json_content = match.group(1).strip()
-            logging.info(f"Bloc d'action explicite détecté: {json_content}")
-            final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
-            try:
-                action_payload = json.loads(json_content)
-                background_tasks.add_task(execute_tool, action_payload)
-            except json.JSONDecodeError:
-                logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
-                final_reply_text = "J'ai tenté une action, mais son format était invalide."
-
-        logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
-        return {"reply": final_reply_text, "session_id": session_id}
-
-    except Exception as exc:
-        full_traceback = traceback.format_exc()
-        error_details = f"Exception: {type(exc).__name__} | Message: {exc}"
-        logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
-        logging.debug(f"Traceback complet : {full_traceback}")
-        raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
+    logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
+    return {"reply": final_reply_text, "session_id": session_id}
