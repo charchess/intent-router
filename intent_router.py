@@ -13,7 +13,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.0" # Version avec mémoire graphe
+APP_VERSION = "13.1" # Version avec mémoire graphe
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini") # Gemini est idéal pour l'extraction de données
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
