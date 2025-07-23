@@ -13,9 +13,10 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.1" # Version avec mémoire graphe
-LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini") # Gemini est idéal pour l'extraction de données
-VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
+APP_VERSION = "13.1"  # Version avec débogage optionnel
+LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
+VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"  # Pour le logging de base
+DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # Pour un débogage plus poussé
 LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
@@ -27,10 +28,9 @@ GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
 N8N_MEMORY_WEBHOOK_URL = os.getenv("N8N_MEMORY_WEBHOOK_URL")
 N8N_ACTION_WEBHOOK_URL = os.getenv("N8N_ACTION_WEBHOOK_URL")
 N8N_RETRIEVAL_WEBHOOK_URL = os.getenv("N8N_RETRIEVAL_WEBHOOK_URL")
-NEO4J_URI = os.getenv("NEO4J_URI") # Ex: "bolt://neo4j:7687"
+NEO4J_URI = os.getenv("NEO4J_URI")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
-
 
 WEBHOOKS = {"memory_store": N8N_MEMORY_WEBHOOK_URL, "home_assistant": N8N_ACTION_WEBHOOK_URL}
 LISA_SYSTEM_PROMPT = """Tu es Lisa, une intelligence artificielle de gestion de HomeLab, conçue pour être efficace, précise et légèrement formelle. Tu es l'assistante principale du "Roi", ton administrateur. Ton rôle est de répondre à ses questions, d'exécuter ses ordres, et de mémoriser les informations importantes.
@@ -60,8 +60,10 @@ Pour toutes les autres conversations, réponds normalement en langage naturel.
 MEMORY_ANALYZER_PROMPT = """Analyse la dernière phrase de l'utilisateur. Détermine si elle contient une information factuelle, une préférence, ou une donnée importante qui doit être mémorisée pour une recherche textuelle future. Si oui, extrais cette information sous une forme déclarative claire.
 Exemples:
 - Utilisateur: "mon projet secret s'appelle Phénix" -> Fait: "Le projet secret de l'utilisateur s'appelle Phénix."
-- Utilisateur: "j'ai enregistré la procédure de sauvegarde du NAS dans un fichier." -> Fait: "La procédure de sauvegarde du NAS a été enregistrée dans un fichier."
+- Utilisateur: "je déteste les oignons" -> Fait: "L'utilisateur déteste les oignons."
+- Utilisateur: "le code du garage est 1234" -> Fait: "Le code du garage est 1234."
 - Utilisateur: "quelle heure est-il ?" -> Fait: null
+
 Réponds UNIQUEMENT en JSON avec la structure {"fact_to_memorize": "Le fait extrait" ou null}.
 """
 
@@ -88,7 +90,6 @@ class UserInput(BaseModel):
 # =================================================================================
 # FONCTIONS
 # =================================================================================
-
 async def extract_and_store_graph_data(user_message: str):
     """Extrait les relations du message et les stocke dans Neo4j."""
     if not all([NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, GEMINI_API_KEY]):
@@ -96,25 +97,28 @@ async def extract_and_store_graph_data(user_message: str):
         return
 
     logging.info(f"Début de l'extraction de graphe pour: '{user_message}'")
-    
+
     # 1. Extraire les triplets avec Gemini
-    payload = { "contents": [{"parts": [{"text": f"{GRAPH_EXTRACTOR_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}] }
+    payload = {"contents": [{"parts": [{"text": f"{GRAPH_EXTRACTOR_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}]}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-    
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json=payload, timeout=20.0)
             response.raise_for_status()
             ai_response = response.json()
             analysis_text = ai_response["candidates"][0]["content"]["parts"][0]["text"]
-            
+
             match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
             if not match:
                 logging.info("Aucun triplet trouvé par l'extracteur de graphe.")
                 return
-            
             extracted_data = json.loads(match.group(0))
             triplets = extracted_data.get("triplets", [])
+
+            if DEBUG:
+                logging.debug(f"Triplets extraits : {triplets}")
+
             if not triplets:
                 logging.info("La liste des triplets est vide.")
                 return
@@ -127,11 +131,17 @@ async def extract_and_store_graph_data(user_message: str):
                 relation = triplet.get('relation')
                 objet = triplet.get('objet')
 
-                if not all([sujet, relation, objet]): continue
+                if not all([sujet, relation, objet]):
+                    if DEBUG:
+                        logging.warning(f"Triplet incomplet ignoré: {triplet}")
+                    continue
 
                 # Sécurisation simple du nom de la relation pour éviter les injections Cypher
                 relation_safe = re.sub(r'[^A-Z0-9_]', '', relation.upper())
-                if not relation_safe: continue
+                if not relation_safe:
+                    if DEBUG:
+                        logging.warning(f"Relation invalide ignorée: {relation}")
+                    continue
 
                 logging.info(f"Ajout au graphe: ({sujet})-[{relation_safe}]->({objet})")
                 query = (
@@ -148,13 +158,14 @@ async def extract_and_store_graph_data(user_message: str):
         logging.error(f"Erreur durant l'extraction et stockage de graphe: {exc}")
 
 
-# Les fonctions analyze_and_memorize, get_relevant_memories, get_reply_from_oobabooga et execute_tool
-# restent les mêmes que dans le code que vous avez fourni. Nous les gardons telles quelles.
-# (collez ici les fonctions `analyze_and_memorize`, `get_relevant_memories`, `get_reply_from_oobabooga`, `execute_tool`)
 async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
-    if not N8N_MEMORY_WEBHOOK_URL: return
-    if not GEMINI_API_KEY: return
-    payload = { "contents": [{"parts": [{"text": f"{MEMORY_ANALYZER_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}] }
+    if not N8N_MEMORY_WEBHOOK_URL:
+        return
+
+    if not GEMINI_API_KEY:
+        return
+
+    payload = {"contents": [{"parts": [{"text": f"{MEMORY_ANALYZER_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}]}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     try:
         async with httpx.AsyncClient() as client:
@@ -162,10 +173,12 @@ async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTa
             response.raise_for_status()
             ai_response = response.json()
             analysis_text = ai_response["candidates"][0]["content"]["parts"][0]["text"]
+
             match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
             if not match:
                 logging.warning(f"Aucun JSON trouvé dans la réponse de l'analyseur : {analysis_text}")
                 return
+
             cleaned_text = match.group(0)
             analysis_json = json.loads(cleaned_text)
             fact = analysis_json.get("fact_to_memorize")
@@ -176,8 +189,11 @@ async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTa
     except Exception as exc:
         logging.error(f"Erreur durant l'analyse de mémoire RAG: {exc}")
 
+
 async def get_relevant_memories(query: str) -> str:
-    if not N8N_RETRIEVAL_WEBHOOK_URL: return ""
+    if not N8N_RETRIEVAL_WEBHOOK_URL:
+        return ""
+
     logging.info(f"Récupération de la mémoire RAG pour: '{query}'")
     try:
         payload = {"query": query}
@@ -186,7 +202,9 @@ async def get_relevant_memories(query: str) -> str:
             response.raise_for_status()
             data = response.json()
             documents = data.get("documents", [])
-            if not documents: return ""
+            if not documents:
+                return ""
+
             context_header = "Contexte pertinent de ta mémoire (utilise ces informations pour formuler ta réponse) :\n"
             formatted_memories = "\n".join([f"- {doc}" for doc in documents])
             logging.info(f"Souvenirs RAG trouvés: {formatted_memories}")
@@ -195,10 +213,12 @@ async def get_relevant_memories(query: str) -> str:
         logging.error(f"Erreur lors de la récupération de la mémoire RAG: {exc}")
         return ""
 
+
 async def execute_tool(payload: dict):
     tool = payload.get("tool")
     webhook_url = WEBHOOKS.get(tool)
-    if not webhook_url: return
+    if not webhook_url:
+        return
     logging.info(f"Exécution de l'outil '{tool}'...")
     try:
         async with httpx.AsyncClient() as client:
@@ -223,15 +243,13 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
     try:
         # 2. Récupération du contexte RAG pour la réponse immédiate
         retrieved_context = await get_relevant_memories(user_input.message)
-        
+
         # 3. Construction du prompt final
         final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
-        
+
         # 4. Appel au LLM pour la génération de la réponse
         raw_reply = ""
-        # Pour l'instant, nous n'avons pas d'historique de conversation, car nous avons abandonné Zep.
-        # Nous pourrions le réintroduire plus tard en interrogeant le graphe.
-        
+
         if LLM_BACKEND == "gemini":
             payload = {
                 "contents": [{"role": "user", "parts": [{"text": user_input.message}]}],
@@ -243,14 +261,15 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                 response.raise_for_status()
                 ai_response = response.json()
                 raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-        else: # Oobabooga ou autre
+        else:  # Oobabooga ou autre
             payload = {
                 "model": OOBABOOGA_MODEL_NAME,
                 "messages": [
                     {"role": "system", "content": final_system_prompt},
                     {"role": "user", "content": user_input.message}
                 ],
-                "max_tokens": 500, "temperature": 0.7
+                "max_tokens": 500,
+                "temperature": 0.7
             }
             async with httpx.AsyncClient(timeout=300.0) as client:
                 response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=payload)
@@ -262,7 +281,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
         match = action_regex.search(raw_reply)
         final_reply_text = raw_reply.strip()
-         
+
         if match:
             json_content = match.group(1).strip()
             logging.info(f"Bloc d'action explicite détecté: {json_content}")
@@ -273,7 +292,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             except json.JSONDecodeError:
                 logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
                 final_reply_text = "J'ai tenté une action, mais son format était invalide."
-        
+
         logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
         return {"reply": final_reply_text, "session_id": session_id}
 
