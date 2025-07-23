@@ -12,11 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from neo4j import GraphDatabase
 
-
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-**APP_VERSION = "13.8"**  # Version avec logique de commande isolée
+APP_VERSION = "13.9"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -89,6 +88,19 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, 
 class UserInput(BaseModel):
     message: str
     session_id: str | None = None
+
+**# =================================================================================
+# DÉMARRAGE
+# =================================================================================
+@app.on_event("startup")
+async def startup_event():
+    logging.info(f"--- Intent Router - Version {APP_VERSION} ---")
+    logging.info(f"Backend LLM sélectionné : {LLM_BACKEND}")
+    if LLM_BACKEND == "oobabooga" and not OOBABOOGA_API_URL:
+        logging.error("AVERTISSEMENT: OOBABOOGA_API_URL n'est pas définie !")
+    if LLM_BACKEND == "gemini" and not GEMINI_API_KEY:
+        logging.error("AVERTISSEMENT: GEMINI_API_KEY n'est pas définie !")
+    logging.info("---------------------------------------------")**
 
 # =================================================================================
 # FONCTIONS
@@ -278,8 +290,8 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                 # logging.getLogger().setLevel(logging.DEBUG)
                 final_reply_text = f"Mode Débogage activé (niveau {debug_level})."
             
-            **elif command == "version":
-                final_reply_text = f"Version de l'application : {APP_VERSION}"**
+            elif command == "version":
+                final_reply_text = f"Version de l'application : {APP_VERSION}"
             
             else:
                 final_reply_text = f"Commande inconnue : '{command}'"
