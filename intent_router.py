@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from neo4j import GraphDatabase
 
+
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
