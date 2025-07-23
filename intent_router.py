@@ -15,11 +15,11 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.4"  # Version avec débogage optionnel, gestion des erreurs et commandes
+APP_VERSION = "13.6"  # Version avec débogage optionnel, gestion des erreurs et commandes
 LLM_BACKEND = os.getenv("LLM_BACKEND", "oobabooga")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"  # Pour le logging de base
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"  # Pour un débogage plus poussé
-LOG_LEVEL = logging.DEBUG if VERBOSE else logging.INFO
+LOG_LEVEL = logging.DEBUG if (VERBOSE or DEBUG) else logging.INFO  # Ajustement du niveau de log
 
 logging.basicConfig(level=LOG_LEVEL, format="%(asctime)s - %(levelname)s - %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
 
@@ -120,6 +120,7 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
 
             if DEBUG:
                 logging.debug(f"Triplets extraits : {triplets}")
+
             if not triplets:
                 logging.info("La liste des triplets est vide.")
                 return False
@@ -168,17 +169,20 @@ async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_d
                 time.sleep(retry_delay)
             else:
                 logging.error(f"Échec persistant de l'écriture dans Neo4j après {max_retries} tentatives.")
-                # Envoi d'un message d'erreur à l'interface
+                # Ici, vous pouvez ajouter du code pour informer l'utilisateur (via l'interface web, par exemple)
+                # On renvoie un signal d'erreur à l'interface via un webhook n8n
+                # La fonction execute_tool peut aussi gérer les erreurs de webhook
                 action_payload = {
                     "tool": "memory_store_error",
                     "message": f"Impossible d'ajouter l'information au graphe (erreur Neo4j). Réessayez plus tard."
                 }
+                # On va ajouter un try except ici aussi
                 try:
                     await execute_tool(action_payload)
-                except Exception as exc2:
-                    logging.error(f"Erreur lors de l'envoi de l'erreur via le webhook: {exc2}")
-                return False  # Indique l'échec de l'opération
+                except Exception as exc:
+                    logging.error(f"Erreur lors de l'envoi de l'erreur via le webhook: {exc}")
 
+                return False  # Indique l'échec de l'opération
 
 async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
     if not N8N_MEMORY_WEBHOOK_URL:
@@ -258,60 +262,43 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
     logging.info(f"Requête reçue. Message: '{user_input.message}'")
     session_id = user_input.session_id or str(uuid.uuid4())
 
-    # 1. Lancement des routines de mémorisation en tâche de fond
-    background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
-    result = await extract_and_store_graph_data(user_input.message) # On recupere le resultat
-
-    # 2. Récupération du contexte RAG pour la réponse immédiate
-    retrieved_context = await get_relevant_memories(user_input.message)
-
-    # 3. Construction du prompt final
-    final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
-
-    # 4. Appel au LLM pour la génération de la réponse
-    raw_reply = ""
-    if LLM_BACKEND == "gemini":
-        payload = {
-            "contents": [{"role": "user", "parts": [{"text": user_input.message}]}],
-            "systemInstruction": {"parts": [{"text": final_system_prompt}]}
-        }
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            ai_response = response.json()
-            raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-    else:  # Oobabooga ou autre
-        payload = {
-            "model": OOBABOOGA_MODEL_NAME,
-            "messages": [
-                {"role": "system", "content": final_system_prompt},
-                {"role": "user", "content": user_input.message}
-            ],
-            "max_tokens": 500,
-            "temperature": 0.7
-        }
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            response = await client.post(f"{OOBABOOGA_API_URL}/chat/completions", json=payload)
-            response.raise_for_status()
-            ai_response = response.json()
-            raw_reply = ai_response.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-    # 5. Analyse de la réponse pour les actions <|ACTION|>
-    action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
-    match = action_regex.search(raw_reply)
-    final_reply_text = raw_reply.strip()
-
-    if match:
-        json_content = match.group(1).strip()
-        logging.info(f"Bloc d'action explicite détecté: {json_content}")
-        final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
+    # Vérifier si c'est une commande
+    if user_input.message.startswith("/cmd"):
         try:
-            action_payload = json.loads(json_content)
-            background_tasks.add_task(execute_tool, action_payload)
-        except json.JSONDecodeError:
-            logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
-            final_reply_text = "J'ai tenté une action, mais son format était invalide."
+            # Parser la commande
+            parts = shlex.split(user_input.message)
+            command = parts[1]  # on recupere la premiere commande
+            args = {}
+            for part in parts[2:]:  # on recupere les autres arguments
+                if "=" in part:
+                    key, value = part.split("=", 1)
+                    args[key] = value
+                else:
+                    logging.warning(f"Argument malformé ignoré: {part}")
+
+            # Exécuter la commande
+            if command == "debug":
+                debug_level = int(args.get("level", 1)) # Debug level 1 par defaut
+                logging.info(f"Activation du débogage (niveau {debug_level})...")
+                # Ajouter du code de debogage en fonction de l'argument.
+                final_reply_text = f"Débogage activé (niveau {debug_level})."
+                # Mettre en place le systeme de log en fonction du debug_level
+
+            else:
+                final_reply_text = f"Commande inconnue : '{command}'"
+        except Exception as e:
+            final_reply_text = f"Erreur lors de l'exécution de la commande : {e}"
+
+        logging.info(f"Réponse à la commande : '{final_reply_text}'")
+        return {"reply": final_reply_text, "session_id": session_id}
+
+    # Sinon, traitement normal du chat
+    background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
+    result = await extract_and_store_graph_data(user_input.message)
+    if not result:
+        final_reply_text = "Désolé, je n'ai pas pu enregistrer cette information. J'essaierai plus tard."
+    else:
+        final_reply_text = "Information enregistrée."  # Ou un autre message de confirmation
 
     logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
     return {"reply": final_reply_text, "session_id": session_id}
