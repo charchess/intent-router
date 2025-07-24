@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.4"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.5"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -362,9 +362,11 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
         return {"reply": final_reply_text, "session_id": session_id}
 
-    except Exception as exc:
-        full_traceback = traceback.format_exc()
-        error_details = f"Exception: {type(exc).__name__} | Message: {exc}"
-        logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
-        logging.debug(f"Traceback complet : {full_traceback}")
-        raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
+        except Exception as exc:
+            full_traceback = traceback.format_exc()
+            error_details = f"Exception: {type(exc).__name__} | Message: {exc}"
+            logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
+            logging.debug(f"Traceback complet : {full_traceback}")
+            raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
+
+
