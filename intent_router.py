@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.10"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.11"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -306,7 +306,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         try:
             # Lancement des routines de mémorisation en tâche de fond
             background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
-            background_tasks.add_task(extract_and_store_graph_data, user_message)
+            background_tasks.add_task(extract_and_store_graph_data, user_input.message)
 
             # Récupération du contexte RAG pour la réponse immédiate
             retrieved_context = await get_relevant_memories(user_input.message)
