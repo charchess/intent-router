@@ -83,8 +83,13 @@ Exemples:
 """
 
 app = FastAPI(title="HomeLab Intent Router", version=APP_VERSION)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://lisa.truxonline.com"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 class UserInput(BaseModel):
     message: str
     session_id: str | None = None
