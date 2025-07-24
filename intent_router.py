@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.3"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.4"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -283,7 +283,8 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
 
     # Étape 1: Traitement des commandes internes
 
-    if user_input.message.startswith("/version"):
+    logging.info(f"Message reçu (brut) : '{user_input.message}'")
+    if user_input.message.lower().startswith("/version"):
         final_reply_text = f"Version de l'application : {APP_VERSION}"
 
 
