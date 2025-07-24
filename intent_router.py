@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.13"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.14"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -110,15 +110,15 @@ async def startup_event():
 # =================================================================================
 # FONCTIONS
 # =================================================================================
-async def extract_and_store_graph_data(user_input.message: str, max_retries=3, retry_delay=1):
+async def extract_and_store_graph_data(user_message: str, max_retries=3, retry_delay=1):
     if not all([NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, GEMINI_API_KEY]):
         logging.warning("Extraction graphe désactivée (configuration manquante).")
         return False
 
-    logging.info(f"Début de l'extraction de graphe pour: '{user_input.message}'")
+    logging.info(f"Début de l'extraction de graphe pour: '{user_message}'")
 
     # 1. Extraire les triplets avec Gemini
-    payload = {"contents": [{"parts": [{"text": f"{GRAPH_EXTRACTOR_PROMPT}\n\nUtilisateur: \"{user_input.message}\""}]}]}
+    payload = {"contents": [{"parts": [{"text": f"{GRAPH_EXTRACTOR_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}]}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
 
     try:
@@ -202,14 +202,14 @@ async def extract_and_store_graph_data(user_input.message: str, max_retries=3, r
                 return False  # Indique l'échec de l'opération
 
 
-async def analyze_and_memorize(user_input.message: str, background_tasks: BackgroundTasks):
+async def analyze_and_memorize(user_message: str, background_tasks: BackgroundTasks):
     if not N8N_MEMORY_WEBHOOK_URL:
         return
 
     if not GEMINI_API_KEY:
         return
 
-    payload = {"contents": [{"parts": [{"text": f"{MEMORY_ANALYZER_PROMPT}\n\nUtilisateur: \"{user_input.message}\""}]}]}
+    payload = {"contents": [{"parts": [{"text": f"{MEMORY_ANALYZER_PROMPT}\n\nUtilisateur: \"{user_message}\""}]}]}
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
     try:
         async with httpx.AsyncClient() as client:
@@ -277,20 +277,20 @@ async def execute_tool(payload: dict):
 # =================================================================================
 @app.post("/chat")
 async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
-    logging.info(f"Requête reçue. Message: '{user_input.message}'")
+    logging.info(f"Requête reçue. Message: '{user_message}'")
     session_id = user_input.session_id or str(uuid.uuid4())
 
     # Étape 1: Traitement des commandes internes
-    logging.info(f"Message reçu (brut) : '{user_input.message}'")
-    if user_input.message.lower().startswith("/version"):
+    logging.info(f"Message reçu (brut) : '{user_message}'")
+    if user_message.lower().startswith("/version"):
         final_reply_text = f"Version de l'application : {APP_VERSION}"
         logging.info(f"Réponse à la commande : '{final_reply_text}'")
         return {"reply": final_reply_text, "session_id": session_id}
 
-    elif user_input.message.startswith("/debug"):
+    elif user_message.startswith("/debug"):
         try:
             # Essayer d'extraire le niveau de débogage
-            parts = user_input.message.split("=")
+            parts = user_message.split("=")
             debug_level = int(parts[1]) if len(parts) > 1 else 1  # Valeur par défaut = 1
             logging.info(f"Activation du débogage (niveau {debug_level})...")
             final_reply_text = f"Mode Débogage activé (niveau {debug_level})."
@@ -304,11 +304,11 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
     else:
         try:
             # Lancement des routines de mémorisation en tâche de fond
-            background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
-            background_tasks.add_task(extract_and_store_graph_data, user_input.message)
+            background_tasks.add_task(analyze_and_memorize, user_message, background_tasks)
+            background_tasks.add_task(extract_and_store_graph_data, user_message)
 
             # Récupération du contexte RAG pour la réponse immédiate
-            retrieved_context = await get_relevant_memories(user_input.message)
+            retrieved_context = await get_relevant_memories(user_message)
             
             # Construction du prompt final
             final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
@@ -317,7 +317,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             raw_reply = ""
             if LLM_BACKEND == "gemini":
                 payload = {
-                    "contents": [{"role": "user", "parts": [{"text": user_input.message}]}],
+                    "contents": [{"role": "user", "parts": [{"text": user_message}]}],
                     "systemInstruction": {"parts": [{"text": final_system_prompt}]}
                 }
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
@@ -331,7 +331,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                     "model": OOBABOOGA_MODEL_NAME,
                     "messages": [
                         {"role": "system", "content": final_system_prompt},
-                        {"role": "user", "content": user_input.message}
+                        {"role": "user", "content": user_message}
                     ],
                     "max_tokens": 500,
                     "temperature": 0.7
