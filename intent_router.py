@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.15"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.10"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -69,15 +69,39 @@ Exemples:
 Réponds UNIQUEMENT en JSON avec la structure {"fact_to_memorize": "Le fait extrait" ou null}.
 """
 
-GRAPH_EXTRACTOR_PROMPT = """Ta tâche est d'analyser le texte de l'utilisateur et d'en extraire toutes les relations factuelles sous forme de triplets (sujet, relation, objet). Ignore les questions, les ordres et les phrases sans information factuelle. La relation doit être un verbe ou une propriété en MAJUSCULES_SNAKE_CASE. Réponds UNIQUEMENT avec un objet JSON contenant une liste de triplets. Si aucun triplet n'est trouvé, réponds avec une liste vide.
+GRAPH_EXTRACTOR_PROMPT = """Ta tâche est d'analyser le texte de l'utilisateur pour en extraire et déduire toutes les relations factuelles sous forme de triplets (sujet, relation, objet). Ignore les questions, ordres et phrases sans information.
 
-Exemples:
-- Utilisateur: "mon chat s'appelle Midas et il aime les croquettes"
-  -> {"triplets": [{"sujet": "chat", "relation": "A_POUR_NOM", "objet": "Midas"}, {"sujet": "Midas", "relation": "AIME", "objet": "croquettes"}]}
+**Règles d'Extraction :**
+1.  La relation doit être un verbe ou une propriété en MAJUSCULES_SNAKE_CASE.
+2.  Le sujet doit être aussi précis que possible.
+
+**Règles d'Inférence et de Déduction :**
+1.  **Possession :** Si l'utilisateur dit "mon/ma/mes" ou "j'ai", la relation doit être `APPARTIENT_A` et l'objet doit être "Roi".
+2.  **Décomposition :** Si une phrase contient plusieurs informations sur plusieurs sujets, crée un triplet pour chaque fait distinct.
+3.  **Inférence de Type :** Si on parle de "chattes", déduis que chaque sujet mentionné `EST_UN` "chat" et `A_POUR_GENRE` "féminin". Si on parle de "serveur", il `EST_UN` "serveur".
+
+**Format de Réponse :**
+Réponds UNIQUEMENT avec un objet JSON contenant une liste de triplets. Si aucun n'est trouvé, la liste doit être vide.
+
+**Exemples :**
+- Utilisateur: "Praline et Vanille sont mes chattes."
+  -> {
+       "triplets": [
+         {"sujet": "Praline", "relation": "EST_UN", "objet": "chat"},
+         {"sujet": "Praline", "relation": "A_POUR_GENRE", "objet": "féminin"},
+         {"sujet": "Praline", "relation": "APPARTIENT_A", "objet": "Roi"},
+         {"sujet": "Vanille", "relation": "EST_UN", "objet": "chat"},
+         {"sujet": "Vanille", "relation": "A_POUR_GENRE", "objet": "féminin"},
+         {"sujet": "Vanille", "relation": "APPARTIENT_A", "objet": "Roi"}
+       ]
+     }
 - Utilisateur: "Le serveur umi a l'IP 192.168.1.10"
-  -> {"triplets": [{"sujet": "serveur umi", "relation": "A_POUR_IP", "objet": "192.168.1.10"}]}
-- Utilisateur: "Je n'aime pas les lundis."
-  -> {"triplets": [{"sujet": "Roi", "relation": "N_AIME_PAS", "objet": "lundis"}]}
+  -> {
+       "triplets": [
+         {"sujet": "serveur umi", "relation": "EST_UN", "objet": "serveur"},
+         {"sujet": "serveur umi", "relation": "A_POUR_IP", "objet": "192.168.1.10"}
+       ]
+     }
 - Utilisateur: "Allume la lumière s'il te plaît"
   -> {"triplets": []}
 """
