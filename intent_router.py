@@ -275,40 +275,46 @@ async def execute_tool(payload: dict):
 # =================================================================================
 # ENDPOINT PRINCIPAL (/chat)
 # =================================================================================
+# =================================================================================
+# ENDPOINT PRINCIPAL (/chat)
+# =================================================================================
 @app.post("/chat")
 async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
-    logging.info(f"Requête reçue. Message: '{user_message}'")
+    # On utilise user_input.message ici, et partout dans cette fonction
+    logging.info(f"Requête reçue. Message: '{user_input.message}'")
     session_id = user_input.session_id or str(uuid.uuid4())
 
     # Étape 1: Traitement des commandes internes
-    logging.info(f"Message reçu (brut) : '{user_message}'")
-    if user_message.lower().startswith("/version"):
+    logging.info(f"Message reçu (brut) : '{user_input.message}'")
+    if user_input.message.lower().startswith("/version"):
         final_reply_text = f"Version de l'application : {APP_VERSION}"
         logging.info(f"Réponse à la commande : '{final_reply_text}'")
         return {"reply": final_reply_text, "session_id": session_id}
 
-    elif user_message.startswith("/debug"):
+    elif user_input.message.lower().startswith("/debug"):
         try:
             # Essayer d'extraire le niveau de débogage
-            parts = user_message.split("=")
+            parts = user_input.message.split("=")
             debug_level = int(parts[1]) if len(parts) > 1 else 1  # Valeur par défaut = 1
             logging.info(f"Activation du débogage (niveau {debug_level})...")
             final_reply_text = f"Mode Débogage activé (niveau {debug_level})."
             logging.info(f"Réponse à la commande : '{final_reply_text}'")
             return {"reply": final_reply_text, "session_id": session_id}
-        except:
-            final_reply_text = f"Erreur lors de l'activation du mode débogage."
+        except Exception as e: # C'est mieux de capturer l'exception pour la logger
+            logging.error(f"Erreur lors de l'activation du mode debug : {e}")
+            final_reply_text = "Erreur lors de l'activation du mode débogage."
             logging.info(f"Réponse à la commande : '{final_reply_text}'")
             return {"reply": final_reply_text, "session_id": session_id}
+            
     # Étape 2: Traitement normal du chat (si ce n'est pas une commande)
     else:
         try:
             # Lancement des routines de mémorisation en tâche de fond
-            background_tasks.add_task(analyze_and_memorize, user_message, background_tasks)
-            background_tasks.add_task(extract_and_store_graph_data, user_message)
+            background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
+            background_tasks.add_task(extract_and_store_graph_data, user_input.message)
 
             # Récupération du contexte RAG pour la réponse immédiate
-            retrieved_context = await get_relevant_memories(user_message)
+            retrieved_context = await get_relevant_memories(user_input.message)
             
             # Construction du prompt final
             final_system_prompt = f"{LISA_SYSTEM_PROMPT}\n\n{retrieved_context}".strip()
@@ -317,7 +323,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             raw_reply = ""
             if LLM_BACKEND == "gemini":
                 payload = {
-                    "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                    "contents": [{"role": "user", "parts": [{"text": user_input.message}]}],
                     "systemInstruction": {"parts": [{"text": final_system_prompt}]}
                 }
                 url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL_NAME}:generateContent?key={GEMINI_API_KEY}"
@@ -326,12 +332,12 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                     response.raise_for_status()
                     ai_response = response.json()
                     raw_reply = ai_response.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
-            else:
+            else: # oobabooga
                 payload = {
                     "model": OOBABOOGA_MODEL_NAME,
                     "messages": [
                         {"role": "system", "content": final_system_prompt},
-                        {"role": "user", "content": user_message}
+                        {"role": "user", "content": user_input.message}
                     ],
                     "max_tokens": 500,
                     "temperature": 0.7
@@ -342,24 +348,24 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                     ai_response = response.json()
                     raw_reply = ai_response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-                # Analyse de la réponse pour les actions <|ACTION|>
-                action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
-                match = action_regex.search(raw_reply)
-                final_reply_text = raw_reply.strip()
+            # Analyse de la réponse pour les actions <|ACTION|>
+            action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
+            match = action_regex.search(raw_reply)
+            final_reply_text = raw_reply.strip()
 
-                if match:
-                    json_content = match.group(1).strip()
-                    logging.info(f"Bloc d'action explicite détecté: {json_content}")
-                    final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
-                    try:
-                        action_payload = json.loads(json_content)
-                        background_tasks.add_task(execute_tool, action_payload)
-                    except json.JSONDecodeError:
-                        logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
-                        final_reply_text = "J'ai tenté une action, mais son format était invalide."
+            if match:
+                json_content = match.group(1).strip()
+                logging.info(f"Bloc d'action explicite détecté: {json_content}")
+                final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
+                try:
+                    action_payload = json.loads(json_content)
+                    background_tasks.add_task(execute_tool, action_payload)
+                except json.JSONDecodeError:
+                    logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
+                    final_reply_text = "J'ai tenté une action, mais son format était invalide."
 
-                logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
-                return {"reply": final_reply_text, "session_id": session_id}
+            logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
+            return {"reply": final_reply_text, "session_id": session_id}
 
         except Exception as exc:
             full_traceback = traceback.format_exc()
@@ -367,4 +373,6 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
             logging.debug(f"Traceback complet : {full_traceback}")
             raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
+        
+
         
