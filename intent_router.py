@@ -17,7 +17,7 @@ from chromadb.utils import embedding_functions
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.11.1"
+APP_VERSION = "13.11.2"
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"

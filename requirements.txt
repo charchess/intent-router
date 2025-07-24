@@ -4,4 +4,7 @@ httpx
 pydantic
 neo4j
 uuid
-chromadb
+
+# Dépendances ajoutées pour la mémoire composable
+chromadb-client
+sentence-transformers
