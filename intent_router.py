@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.8"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.9"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -110,7 +110,7 @@ async def startup_event():
 # =================================================================================
 # FONCTIONS
 # =================================================================================
-async def extract_and_store_graph_data(user_input.message: str, max_retries=3, retry_delay=1):
+async def extract_and_store_graph_data(user_message: str, max_retries: int=3, retry_delay: int=1):
     if not all([NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, GEMINI_API_KEY]):
         logging.warning("Extraction graphe désactivée (configuration manquante).")
         return False
