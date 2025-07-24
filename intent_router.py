@@ -111,7 +111,6 @@ async def startup_event():
 # FONCTIONS
 # =================================================================================
 async def extract_and_store_graph_data(user_input.message: str, max_retries=3, retry_delay=1):
-    # Extrait les relations du message et les stocke dans Neo4j, avec tentatives.
     if not all([NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, GEMINI_API_KEY]):
         logging.warning("Extraction graphe désactivée (configuration manquante).")
         return False
