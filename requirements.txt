@@ -4,4 +4,4 @@ httpx
 pydantic
 neo4j
 uuid
-
+chromadb

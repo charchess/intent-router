@@ -17,7 +17,7 @@ from chromadb.utils import embedding_functions
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.11.0"
+APP_VERSION = "13.11.1"
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -361,5 +361,4 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
             logging.debug(f"Traceback complet : {full_traceback}")
             raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
-        
         
