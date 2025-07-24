@@ -15,7 +15,7 @@ from neo4j import GraphDatabase
 # =================================================================================
 # CONFIGURATION
 # =================================================================================
-APP_VERSION = "13.9.5"  # Version avec logging de démarrage restauré
+APP_VERSION = "13.9.6"  # Version avec logging de démarrage restauré
 LLM_BACKEND = os.getenv("LLM_BACKEND", "gemini")
 VERBOSE = os.getenv("VERBOSE", "false").lower() == "true"
 DEBUG = os.getenv("DEBUG", "false").lower() == "true"
@@ -282,11 +282,11 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
     session_id = user_input.session_id or str(uuid.uuid4())
 
     # Étape 1: Traitement des commandes internes
-
     logging.info(f"Message reçu (brut) : '{user_input.message}'")
     if user_input.message.lower().startswith("/version"):
         final_reply_text = f"Version de l'application : {APP_VERSION}"
-
+        logging.info(f"Réponse à la commande : '{final_reply_text}'")
+        return {"reply": final_reply_text, "session_id": session_id}
 
     elif user_input.message.startswith("/debug"):
         try:
@@ -306,7 +306,7 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
         try:
             # Lancement des routines de mémorisation en tâche de fond
             background_tasks.add_task(analyze_and_memorize, user_input.message, background_tasks)
-            background_tasks.add_task(extract_and_store_graph_data, user_input.message)
+            background_tasks.add_task(extract_and_store_graph_data, user_message)
 
             # Récupération du contexte RAG pour la réponse immédiate
             retrieved_context = await get_relevant_memories(user_input.message)
@@ -343,24 +343,24 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
                     ai_response = response.json()
                     raw_reply = ai_response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-        # Analyse de la réponse pour les actions <|ACTION|>
-        action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
-        match = action_regex.search(raw_reply)
-        final_reply_text = raw_reply.strip()
-         
-        if match:
-            json_content = match.group(1).strip()
-            logging.info(f"Bloc d'action explicite détecté: {json_content}")
-            final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
-            try:
-                action_payload = json.loads(json_content)
-                background_tasks.add_task(execute_tool, action_payload)
-            except json.JSONDecodeError:
-                logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
-                final_reply_text = "J'ai tenté une action, mais son format était invalide."
-        
-        logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
-        return {"reply": final_reply_text, "session_id": session_id}
+                # Analyse de la réponse pour les actions <|ACTION|>
+                action_regex = re.compile(r"<\|ACTION\|>([\s\S]*?)<\|\/ACTION\|>", re.DOTALL)
+                match = action_regex.search(raw_reply)
+                final_reply_text = raw_reply.strip()
+
+                if match:
+                    json_content = match.group(1).strip()
+                    logging.info(f"Bloc d'action explicite détecté: {json_content}")
+                    final_reply_text = action_regex.sub("", raw_reply).strip() or "Action en cours, mon Roi."
+                    try:
+                        action_payload = json.loads(json_content)
+                        background_tasks.add_task(execute_tool, action_payload)
+                    except json.JSONDecodeError:
+                        logging.error("Erreur de parsing JSON dans le bloc d'action explicite.")
+                        final_reply_text = "J'ai tenté une action, mais son format était invalide."
+
+                logging.info(f"Réponse finale envoyée à l'utilisateur: '{final_reply_text}'")
+                return {"reply": final_reply_text, "session_id": session_id}
 
         except Exception as exc:
             full_traceback = traceback.format_exc()
@@ -368,5 +368,4 @@ async def handle_chat(user_input: UserInput, background_tasks: BackgroundTasks):
             logging.error(f"Une erreur critique est survenue dans handle_chat: {error_details}")
             logging.debug(f"Traceback complet : {full_traceback}")
             raise HTTPException(status_code=502, detail={"error": "Erreur lors du traitement de la requête.", "details": error_details})
-
-
+        
